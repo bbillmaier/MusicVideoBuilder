@@ -50,11 +50,13 @@ export function serializeComfyWork<T>(work: () => Promise<T>): Promise<T> {
   return next;
 }
 
-export function localEndpoint(value: string): string {
+export function comfyEndpoint(value: string, location: "local" | "remote" = "local"): string {
   const url = new URL(value);
-  if (!new Set(["127.0.0.1", "localhost", "::1", "[::1]"]).has(url.hostname)) throw new Error("Martini Shot only connects to a local ComfyUI endpoint.");
+  if (location === "local" && !new Set(["127.0.0.1", "localhost", "::1", "[::1]"]).has(url.hostname)) throw new Error("This PC mode only connects to a local ComfyUI endpoint.");
   return url.toString().replace(/\/$/, "");
 }
+/** Backwards compatible name for callers that mean This PC. */
+export const localEndpoint = (value: string) => comfyEndpoint(value, "local");
 
 async function request(endpoint: string, route: string, init?: RequestInit): Promise<Response> {
   const controller = new AbortController();
@@ -71,10 +73,18 @@ export async function comfyStatus(url?: string): Promise<ComfyStatus> {
       try { configuredUrl = (await getMachineSettings()).comfyUrl; }
       catch { configuredUrl = process.env.COMFYUI_URL || "http://127.0.0.1:8188"; }
     }
-    endpoint = localEndpoint(configuredUrl);
+    const settings = await getMachineSettings();
+    endpoint = comfyEndpoint(configuredUrl, settings.comfyLocation);
     const response = await request(endpoint, "/system_stats");
     if (!response.ok) throw new Error(`ComfyUI returned HTTP ${response.status}.`);
-    return { connected: true, endpoint, message: "ComfyUI is connected locally.", system: await response.json() };
+    if (settings.comfyLocation === "remote") {
+      const headers: Record<string, string> = settings.fileApiToken ? { "X-Martini-Token": settings.fileApiToken } : {};
+      const info = await request(endpoint, "/martini/fs/info", { headers });
+      if (!info.ok) throw new Error(info.status === 403 ? "ComfyUI file API rejected the request: wrong or missing token." : "This remote ComfyUI needs the current MartiniShot nodes (file API missing).");
+      const api = (await info.json() as { api?: unknown }).api;
+      if (typeof api !== "number" || api > 1) throw new Error("This remote ComfyUI has a newer incompatible MartiniShot file API.");
+    }
+    return { connected: true, endpoint, message: settings.comfyLocation === "remote" ? "ComfyUI is connected remotely." : "ComfyUI is connected locally.", system: await response.json() };
   } catch (error) {
     return { connected: false, endpoint, message: error instanceof Error ? error.message : "ComfyUI is unavailable." };
   }
@@ -114,7 +124,8 @@ type HistoryItem = { status?: { status_str?: string; messages?: unknown[] }; out
 
 /** Prompt IDs ComfyUI currently lists as running or pending (any client). */
 export async function comfyQueueIds(): Promise<{ running: string[]; pending: string[] }> {
-  const endpoint = localEndpoint((await getMachineSettings()).comfyUrl);
+  const settings = await getMachineSettings();
+  const endpoint = comfyEndpoint(settings.comfyUrl, settings.comfyLocation);
   const response = await request(endpoint, "/queue");
   if (!response.ok) throw new Error(`Could not read the ComfyUI queue (HTTP ${response.status}).`);
   const queue = await response.json() as { queue_running?: unknown[][]; queue_pending?: unknown[][] };
@@ -245,7 +256,7 @@ async function releaseMemory(endpoint: string, onCleanup?: (evidence: CleanupEvi
 export async function runWorkflowTemplate(isDevelopment: boolean, name: string, values: Record<string, unknown>, projectId?: string,
   build?: (template: WorkflowTemplate) => Record<string, unknown>, options: WorkflowOptions = {}): Promise<WorkflowRun> {
   const settings = await getMachineSettings();
-  const endpoint = localEndpoint(settings.comfyUrl);
+  const endpoint = comfyEndpoint(settings.comfyUrl, settings.comfyLocation);
   const template = await loadWorkflowTemplate(isDevelopment, name);
   const job: ComfyJob = { id: options.jobId || randomUUID(), promptId: null, stage: template.stage, status: "queued", report: null, error: null, cleanupStatus: "not_requested", submittedAt: new Date().toISOString(), completedAt: null };
   await createComfyJob({ ...job, projectId });
@@ -287,5 +298,6 @@ export async function runWorkflowTemplate(isDevelopment: boolean, name: string, 
 
 /** A standalone POST /free cycle (e.g. after recovering a render that finished while Martini Shot was closed). */
 export async function freeComfyMemory(): Promise<CleanupEvidence> {
-  return releaseMemory(localEndpoint((await getMachineSettings()).comfyUrl));
+  const settings = await getMachineSettings();
+  return releaseMemory(comfyEndpoint(settings.comfyUrl, settings.comfyLocation));
 }

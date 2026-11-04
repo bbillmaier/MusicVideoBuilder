@@ -175,10 +175,12 @@ function Settings({ database, comfy, checking, onRecheck, onOpenComfy }: { datab
 
       <section className="panel setting-card">
         <div className="setting-head"><Icon.projects size={22} aria-hidden /><div><h2>ComfyUI folders</h2><p>Projects are stored where the MartiniShot nodes expect them. Use the output folder of the ComfyUI that is running.</p></div></div>
-        <label className="field"><span>Output folder</span>
+        <label className="field"><span>Location</span><select className="select" value={settings.comfyLocation} onChange={(event) => update("comfyLocation", event.target.value as "local" | "remote")}><option value="local">This PC</option><option value="remote">Remote server</option></select></label>
+        {settings.comfyLocation === "local" ? <><label className="field"><span>Output folder</span>
           <input className="input mono" value={settings.comfyOutputDir} placeholder={String.raw`E:\...\ComfyUI\output`} onChange={(event) => update("comfyOutputDir", event.target.value)} />
-        </label>
-        <PathField label="Projects" value={projectsRootHint(settings.comfyOutputDir)} />
+        </label><PathField label="Projects" value={projectsRootHint(settings.comfyOutputDir)} /></> : <label className="field"><span>File API token</span>
+          <input className="input mono" type="password" value={settings.fileApiToken} placeholder="MARTINI_SHOT_TOKEN" onChange={(event) => update("fileApiToken", event.target.value)} />
+        </label>}
       </section>
 
       <section className="panel setting-card">

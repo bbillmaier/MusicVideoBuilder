@@ -1,6 +1,6 @@
 // Project and asset service owned by Electron main. The renderer reaches it only through the typed IPC in main.ts.
-import { randomUUID } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { createReadStream, existsSync, statSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type {
@@ -9,8 +9,9 @@ import type {
 import { buildCreateProjectPrompt, createProjectReport, type CreateProjectReference } from "./create-project-workflow";
 import { runWorkflowTemplate, serializeComfyWork } from "./comfy-client";
 import { db, getMachineSettings } from "./db";
+import { projectStorage } from "./project-storage";
 import {
-  ORIGINALS_FOLDER, ROLE_RULES, comfyOutputReference, copyAsset, friendlyName, isInside, missingRequirements,
+  ORIGINALS_FOLDER, ROLE_RULES, copyAsset, friendlyName, isInside, missingRequirements,
   statusAfterAssetChange, storedFileName, validateProjectName,
 } from "./project-rules";
 
@@ -38,25 +39,11 @@ export function configureProjectService(options: { isDevelopment: boolean; onCha
 
 // ----- Paths -----------------------------------------------------------------------------------------------
 
-async function comfyOutputDir(): Promise<string> {
-  const dir = String((await getMachineSettings()).comfyOutputDir || "").trim();
-  if (!dir || !path.isAbsolute(dir)) throw new Error("Set the ComfyUI output folder in Settings (for example E:\\...\\ComfyUI\\output).");
-  return path.resolve(dir);
-}
+const originalsFolder = (projectPath: string) => `${projectPath}/assets/${ORIGINALS_FOLDER}`;
 
-async function projectsRootChecked(): Promise<string> {
-  const output = await comfyOutputDir();
-  let stat;
-  try { stat = await fs.stat(output); } catch { throw new Error(`The ComfyUI output folder was not found: ${output}. Check the folder in Settings.`); }
-  if (!stat.isDirectory()) throw new Error(`The ComfyUI output folder setting is not a folder: ${output}.`);
-  return path.join(output, "martini_shot");
-}
-
-const originalsFolder = (projectPath: string) => path.join(projectPath, "assets", ORIGINALS_FOLDER);
-
-function folderExists(projectPath: string): boolean {
-  try { return statSync(projectPath).isDirectory(); } catch { return false; }
-}
+// Details are synchronous because they are read from SQLite. File operations below
+// perform the authoritative async storage check; a relative project path is usable.
+function folderExists(projectPath: string): boolean { return path.isAbsolute(projectPath) ? (() => { try { return statSync(projectPath).isDirectory(); } catch { return false; } })() : Boolean(projectPath); }
 
 // ----- Reads -----------------------------------------------------------------------------------------------
 
@@ -75,7 +62,7 @@ function toAsset(row: AssetRow): ProjectAsset {
   return {
     id: row.id, role: row.role, displayName: row.display_name, fileName: path.basename(row.original_path),
     originalPath: row.original_path, storedPath: row.stored_path, checksum: row.checksum, fileSize: row.file_size,
-    durationSeconds: row.duration_seconds, sortOrder: row.sort_order, available: existsSync(row.stored_path),
+    durationSeconds: row.duration_seconds, sortOrder: row.sort_order, available: path.isAbsolute(row.stored_path) ? existsSync(row.stored_path) : Boolean(row.stored_path),
     previewUrl: `martini-asset://asset/${row.id}?v=${(row.checksum || "0").slice(0, 12)}`,
   };
 }
@@ -122,14 +109,8 @@ export function activeProject(): ProjectDetail | null {
 }
 
 export async function projectsOverview(): Promise<ProjectsOverview> {
-  let projectsRoot = "";
-  let rootError: string | null = null;
-  try { projectsRoot = await projectsRootChecked(); }
-  catch (error) {
-    rootError = error instanceof Error ? error.message : String(error);
-    projectsRoot = path.join(String((await getMachineSettings()).comfyOutputDir || ""), "martini_shot");
-  }
-  return { active: activeProject(), recent: listProjects(), projectsRoot, rootError };
+  const settings = await getMachineSettings();
+  return { active: activeProject(), recent: listProjects(), projectsRoot: settings.comfyLocation === "remote" ? "martini_shot" : path.join(settings.comfyOutputDir, "martini_shot"), rootError: null };
 }
 
 // ----- Project create/open ---------------------------------------------------------------------------------
@@ -138,15 +119,12 @@ export async function createProject(rawName: unknown): Promise<ProjectDetail> {
   const { name, slug } = validateProjectName(rawName);
   const existing = db().prepare("SELECT name FROM martini_projects WHERE slug = ?").get(slug) as { name: string } | undefined;
   if (existing) throw new Error(`"${existing.name}" already uses the folder name "${slug}". Open it from Recent projects or choose a different name.`);
-  const root = await projectsRootChecked();
-  const projectPath = path.join(root, slug);
-  if (existsSync(projectPath)) {
-    throw new Error(`A folder named "${slug}" already exists in ${root}. It may have been created directly in ComfyUI. Choose a different name so it is not overwritten.`);
-  }
+  const storage = await projectStorage();
+  const projectPath = storage.remote ? slug : storage.localPath!(slug);
+  if (storage.remote ? await storage.exists(projectPath) : existsSync(projectPath)) throw new Error(`A project named "${slug}" already exists. Choose a different name so it is not overwritten.`);
   try {
-    await fs.mkdir(root, { recursive: true });
-    await fs.mkdir(projectPath);
-    await fs.mkdir(originalsFolder(projectPath), { recursive: true });
+    if (storage.remote) { await storage.mkdir(projectPath); await storage.mkdir(originalsFolder(projectPath)); }
+    else { await fs.mkdir(originalsFolder(projectPath), { recursive: true }); }
   } catch (error) {
     throw new Error(`Could not create the project folder ${projectPath}: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -196,7 +174,22 @@ function afterAssetChange(row: ProjectRow, issues: AssetIssue[]): void {
 async function removeStoredCopy(projectPath: string, storedPath: string): Promise<void> {
   // Only the project's own copy may be deleted; the user's original file is never touched.
   if (!isInside(originalsFolder(projectPath), storedPath)) return;
-  await fs.rm(storedPath, { force: true }).catch(() => undefined);
+  const storage = await projectStorage();
+  if (storage.remote) await storage.remove(storedPath).catch(() => undefined);
+  else await fs.rm(storedPath, { force: true }).catch(() => undefined);
+}
+
+async function storeAsset(role: AssetRole, source: string, destination: string): Promise<{ storedPath: string; checksum: string; fileSize: number }> {
+  const storage = await projectStorage();
+  if (!storage.remote) return copyAsset(role, source, path.dirname(destination), path.basename(destination));
+  const rule = ROLE_RULES[role];
+  const stat = await fs.stat(source).catch(() => { throw new Error(`The file no longer exists: ${source}`); });
+  if (!stat.isFile() || !stat.size || stat.size > rule.maxBytes) throw new Error(`${path.basename(source)} is not a supported ${rule.label.toLowerCase()} file.`);
+  if (!rule.extensions.includes(path.extname(source).toLowerCase())) throw new Error(`${rule.label}s must be ${rule.extensions.join(", ")}.`);
+  const hash = createHash("sha256");
+  await new Promise<void>((resolve, reject) => { const stream = createReadStream(source); stream.on("data", (chunk: Buffer) => hash.update(chunk)); stream.once("error", reject); stream.once("end", resolve); });
+  await storage.uploadFile(source, destination, { overwrite: false });
+  return { storedPath: destination, checksum: hash.digest("hex"), fileSize: stat.size };
 }
 
 /** Copies the chosen files into the project. A failing file is reported and skipped; the rest still import. */
@@ -212,7 +205,7 @@ export async function addAssets(projectId: unknown, role: AssetRole, sources: st
   for (const source of sources) {
     const id = randomUUID();
     try {
-      const copy = await copyAsset(role, source, originalsFolder(row.project_path), storedFileName(role, id, source));
+      const copy = await storeAsset(role, source, `${originalsFolder(row.project_path)}/${storedFileName(role, id, source)}`);
       // Same file content in the same role, either already saved or earlier in this same selection.
       const duplicate = [...existing, ...accepted].find((asset) => asset.role === role && asset.checksum === copy.checksum);
       if (duplicate && ROLE_RULES[role].multiple) {
@@ -269,7 +262,7 @@ export async function replaceAsset(projectId: unknown, assetId: unknown, source:
   const asset = ownedAsset(row, assetId);
   if (!source) return { project: getProject(row.id), added: 0, issues: [], cancelled: true };
   try {
-    const copy = await copyAsset(asset.role, source, originalsFolder(row.project_path), storedFileName(asset.role, randomUUID(), source));
+    const copy = await storeAsset(asset.role, source, `${originalsFolder(row.project_path)}/${storedFileName(asset.role, randomUUID(), source)}`);
     db().prepare(`UPDATE project_assets SET display_name = ?, original_path = ?, stored_path = ?, checksum = ?, file_size = ?, duration_seconds = NULL, updated_at = ?
       WHERE id = ?`).run(friendlyName(source), source, copy.storedPath, copy.checksum, copy.fileSize, now(), asset.id);
     await removeStoredCopy(row.project_path, asset.stored_path);
@@ -295,7 +288,7 @@ export function recordSongDuration(projectId: unknown, assetId: unknown, seconds
 export function previewFile(assetId: string): string | null {
   const asset = db().prepare("SELECT a.stored_path, p.project_path FROM project_assets a JOIN martini_projects p ON p.id = a.project_id WHERE a.id = ?")
     .get(assetId) as { stored_path: string; project_path: string } | undefined;
-  if (!asset || !isInside(asset.project_path, asset.stored_path) || !existsSync(asset.stored_path)) return null;
+  if (!asset || (path.isAbsolute(asset.project_path) ? !isInside(asset.project_path, asset.stored_path) || !existsSync(asset.stored_path) : !asset.stored_path.startsWith(`${asset.project_path}/`))) return null;
   return asset.stored_path;
 }
 
@@ -328,7 +321,9 @@ export function scheduleComfySync(projectId: string): void {
  *  Returns null when saved, otherwise the reason it is not. */
 export async function ensureComfyProjectSaved(projectId: string): Promise<string | null> {
   const row = projectRow(projectId);
-  if (row.comfy_sync_status !== "saved" || !existsSync(path.join(row.project_path, "project.json"))) await syncProjectToComfy(projectId);
+  const savedPath = `${row.project_path}/project.json`;
+  const savedStorage = await projectStorage();
+  if (row.comfy_sync_status !== "saved" || (savedStorage.remote ? !(await savedStorage.exists(savedPath)) : !existsSync(savedPath))) await syncProjectToComfy(projectId);
   const after = projectRow(projectId);
   if (after.comfy_sync_status === "saved") return null;
   return after.comfy_sync_error || (after.comfy_sync_status === "waiting_for_assets" ? missingRequirements(countRoles(assetRows(projectId))).join(". ") : "The project has not been saved through ComfyUI.");
@@ -355,17 +350,19 @@ async function syncProjectToComfy(projectId: string): Promise<void> {
   if (missingRequirements(countRoles(assets)).length) { setSync(row.id, "waiting_for_assets"); return; }
   setSync(row.id, "saving");
   try {
-    const output = await comfyOutputDir();
-    const missingFiles = assets.filter((asset) => !existsSync(asset.stored_path));
+    const storage = await projectStorage();
+    const missingFiles = [] as AssetRow[];
+    for (const asset of assets) if (storage.remote ? !(await storage.exists(asset.stored_path)) : !existsSync(asset.stored_path)) missingFiles.push(asset);
     if (missingFiles.length) throw new Error(`These project copies are missing; replace them: ${missingFiles.map((asset) => asset.display_name).join(", ")}.`);
     const song = assets.find((asset) => asset.role === "song")!;
     const references: CreateProjectReference[] = assets.filter((asset) => asset.role !== "song").map((asset) => ({
-      imageFile: comfyOutputReference(output, asset.stored_path), kind: ROLE_RULES[asset.role].comfyKind as CreateProjectReference["kind"], name: asset.display_name,
+      imageFile: storage.remote ? `martini_shot/${asset.stored_path} [output]` : `martini_shot/${row.slug}/${path.relative(row.project_path, asset.stored_path).split(path.sep).join("/")} [output]`, kind: ROLE_RULES[asset.role].comfyKind as CreateProjectReference["kind"], name: asset.display_name,
     }));
-    const values = { projectName: row.slug, songFile: comfyOutputReference(output, song.stored_path), references };
+    const localSong = `martini_shot/${row.slug}/${path.relative(row.project_path, song.stored_path).split(path.sep).join("/")} [output]`;
+    const values = { projectName: row.slug, songFile: storage.remote ? `martini_shot/${song.stored_path} [output]` : localSong, references };
     const run = await runWorkflowTemplate(development, "01-create-project.json", {}, row.id, (template) => buildCreateProjectPrompt(template, values));
-    const manifest = path.join(row.project_path, "project.json");
-    if (!existsSync(manifest)) {
+    const manifest = `${row.project_path}/project.json`;
+    if (storage.remote ? !(await storage.exists(manifest)) : !existsSync(manifest)) {
       throw new Error(`ComfyUI finished, but ${manifest} was not written. Check that the ComfyUI output folder in Settings is the folder the running ComfyUI uses.`);
     }
     const report = createProjectReport(run.outputs);

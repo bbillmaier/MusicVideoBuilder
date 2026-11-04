@@ -11,7 +11,12 @@ Then it starts ComfyUI on port 8188.
 
 Everything goes on the pod's network volume (`/workspace`). The first start downloads about 64 GB with the default models. Later starts reuse what's on the volume and only refresh the MartiniShot nodes from git.
 
-> **Not usable from the app yet.** Martini Shot currently reads and writes files directly in ComfyUI's output folder, so it can only drive a ComfyUI on the same PC. Remote use needs the file API (planned). Until then this pod can be tested in ComfyUI's own web UI.
+## Connect Martini Shot to your pod
+
+In Martini Shot Settings choose **Remote server**, enter
+`https://<pod-id>-8188.proxy.runpod.net` as the endpoint, and enter the same
+file API token configured on the pod. Projects created in this mode live on the
+pod and are not accessible as Windows folders.
 
 ## 1. Create a network volume
 
@@ -26,21 +31,22 @@ RunPod → **Templates → New Template**.
 
 | Field | Value |
 |---|---|
-| Container image | a RunPod PyTorch image with CUDA 12.8 or newer, e.g. `runpod/pytorch:<tag>` with `cu128` in its tag |
+| Container image | `runpod/pytorch:1.6.0-cu1281-torch291-ubuntu2404` (any RunPod PyTorch image with CUDA 12.8+ works; the script installs its own torch) |
 | Container disk | 30 GB |
 | Volume mount path | `/workspace` |
 | Expose HTTP ports | `8188` (add `8888` too to keep Jupyter) |
 | Expose TCP ports | `22` (SSH, optional) |
 
-**Container start command** (replace `<you>`):
+**Container start command** (change the URL for a fork):
 
 ```bash
-bash -c 'R=https://github.com/<you>/martini-shot.git; D=/workspace/martini-shot-src; [ -n "$GITHUB_TOKEN" ] && A="https://x-access-token:$GITHUB_TOKEN@${R#https://}" || A=$R; [ -d $D/.git ] || git clone --depth 1 "$A" $D; export MARTINISHOT_REPO=$R; exec bash $D/cloud/runpod/setup.sh'
+bash -c 'R=https://github.com/bbillmaier/MusicVideoBuilder.git; D=/workspace/martini-shot-src; [ -n "$GITHUB_TOKEN" ] && A="https://x-access-token:$GITHUB_TOKEN@${R#https://}" || A=$R; [ -d $D/.git ] || git clone --depth 1 "$A" $D; export MARTINISHOT_REPO=$R; exec bash $D/cloud/runpod/setup.sh'
 ```
 
 The start command only clones the repo the first time. `setup.sh` then pulls the latest version of the nodes on every start. Changes to `setup.sh` itself are picked up from the second start onward.
 
 **Environment variables:** at least `MARTINISHOT_REF=main`. Add `GITHUB_TOKEN` if the repo is private: a fine-grained token with read-only *Contents* access to this repo. Store it as a RunPod secret (`{{ RUNPOD_SECRET_github_token }}`), not as plain text.
+Set `MARTINI_SHOT_TOKEN` to a long random value and store it as a RunPod secret too. It protects only Martini Shot's project-file API; ComfyUI's normal `/prompt` and `/view` endpoints remain unauthenticated.
 
 ## 3. Start a pod
 
@@ -130,6 +136,14 @@ The script checks every download against its known size, so a partial file is re
 | `SKIP_MODELS` | `0` | `1` skips all model downloads |
 | `SKIP_START` | `0` | `1` sets everything up without starting ComfyUI |
 | `RUNPOD_SERVICES` | `1` | also runs the image's `/start.sh` (SSH, Jupyter) |
+
+## Troubleshooting
+
+**HTTP ERROR 403 when opening ComfyUI in the browser.** ComfyUI's origin check rejects any request with `Sec-Fetch-Site: cross-site` (`server.py`, `create_origin_only_middleware`). Clicking **Connect** on runpod.io opens `proxy.runpod.net`, a different site, so the page is refused. ComfyUI doesn't log anything when this happens.
+- Paste the proxy URL into a new tab yourself. Typed addresses and bookmarks aren't cross-site.
+- Or start ComfyUI with `COMFYUI_ARGS=--enable-cors-header`. That replaces the origin check with permissive CORS. The pod has no login anyway, but any web page that knew the URL could then queue jobs on it.
+
+Martini Shot's requests come from Electron's main process, not a browser page, so the app is never blocked by this check.
 
 ## Notes
 

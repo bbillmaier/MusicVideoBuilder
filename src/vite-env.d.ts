@@ -27,7 +27,7 @@ declare global {
     comfyUrl: string; videoModel: string; vae: string; directorLlm: string; contextLength: string;
     lora: string; loraStrength: number; steps: number; cfg: number; seedMode: "random" | "fixed";
     resolution: string; fps: number; outputFormat: string; dynamicLength: boolean; higherQuality: boolean;
-    keepIntermediateOutputs: boolean; livePreviews: boolean; comfyOutputDir: string;
+    keepIntermediateOutputs: boolean; livePreviews: boolean; comfyOutputDir: string; comfyLocation: "local" | "remote"; fileApiToken: string;
   };
 
   type AssetRole = SharedAssetRole;

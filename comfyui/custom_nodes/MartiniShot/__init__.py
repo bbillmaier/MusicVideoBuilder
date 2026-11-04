@@ -1,6 +1,7 @@
 from .dance_nodes import MiniMaxH3PromptLLMLoader
 from .mv_auto_nodes import MiniMaxH3AutoReference
 from .live_preview import MartiniShotLivePreview
+from .file_api import register_file_api
 from .nodes import NODE_CLASS_MAPPINGS as _STAGED_NODES, NODE_DISPLAY_NAME_MAPPINGS as _STAGED_NAMES
 from .video_nodes import MiniMaxH3TrimOverlap
 
@@ -18,5 +19,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3TrimOverlap": "Martini Shot Trim Overlap Frames",
     "MartiniShotLivePreview": "Martini Shot Live Render Preview",
 }
+
+register_file_api()
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
