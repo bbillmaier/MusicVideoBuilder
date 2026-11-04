@@ -1,0 +1,43 @@
+{
+  "name": "01-create-project.json",
+  "stage": "project",
+  "description": "Saves the project's song and reference images as a MartiniShot project (project.json, assets/song.flac, assets/reference_NN.png) that Martini Shot Open Project can read.",
+  "prompt": {
+    "song": {
+      "class_type": "LoadAudio",
+      "inputs": { "audio": "{{song_file}}" }
+    },
+    "project": {
+      "class_type": "MartiniShotProject",
+      "inputs": {
+        "audio": ["song", 0],
+        "refs": ["{{refs_node}}", 0],
+        "project_name": "{{project_name}}",
+        "replace_assets": true
+      }
+    },
+    "report": {
+      "class_type": "PreviewAny",
+      "inputs": { "source": ["project", 1] }
+    }
+  },
+  "repeat": {
+    "reference": {
+      "ref_{{index}}_image": {
+        "class_type": "LoadImage",
+        "inputs": { "image": "{{image_file}}" }
+      },
+      "ref_{{index}}": {
+        "class_type": "MiniMaxH3AutoReference",
+        "inputs": {
+          "image": ["ref_{{index}}_image", 0],
+          "kind": "{{kind}}",
+          "name": "{{name}}",
+          "weight": 1.0,
+          "tags": "",
+          "previous_refs": ["{{previous_refs_node}}", 0]
+        }
+      }
+    }
+  }
+}

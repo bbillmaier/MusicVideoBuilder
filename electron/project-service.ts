@@ -1,0 +1,386 @@
+// Project and asset service owned by Electron main. The renderer reaches it only through the typed IPC in main.ts.
+import { randomUUID } from "node:crypto";
+import { existsSync, statSync } from "node:fs";
+import fs from "node:fs/promises";
+import path from "node:path";
+import type {
+  AssetChangeResult, AssetIssue, AssetRole, ComfySyncStatus, ProjectAsset, ProjectDetail, ProjectState, ProjectsOverview, ProjectSummary,
+} from "./contracts";
+import { buildCreateProjectPrompt, createProjectReport, type CreateProjectReference } from "./create-project-workflow";
+import { runWorkflowTemplate, serializeComfyWork } from "./comfy-client";
+import { db, getMachineSettings } from "./db";
+import {
+  ORIGINALS_FOLDER, ROLE_RULES, comfyOutputReference, copyAsset, friendlyName, isInside, missingRequirements,
+  statusAfterAssetChange, storedFileName, validateProjectName,
+} from "./project-rules";
+
+type ProjectRow = {
+  id: string; name: string; slug: string; project_path: string; status: ProjectState; created_at: string; updated_at: string;
+  last_opened_at: string | null; comfy_sync_status: ComfySyncStatus; comfy_sync_error: string | null; comfy_synced_at: string | null;
+  comfy_sync_job_id: string | null;
+};
+type AssetRow = {
+  id: string; project_id: string; role: AssetRole; display_name: string; original_path: string; stored_path: string;
+  checksum: string | null; sort_order: number; file_size: number | null; duration_seconds: number | null;
+};
+
+const ROLE_ORDER = `CASE role WHEN 'song' THEN 0 WHEN 'performer' THEN 1 WHEN 'outfit' THEN 2 ELSE 3 END`;
+const now = () => new Date().toISOString();
+
+let notify: (projectId: string) => void = () => undefined;
+let development = false;
+export function configureProjectService(options: { isDevelopment: boolean; onChange(projectId: string): void }): void {
+  development = options.isDevelopment;
+  notify = options.onChange;
+  // A save interrupted by quitting the app is not in progress any more.
+  db().prepare("UPDATE martini_projects SET comfy_sync_status = 'not_saved' WHERE comfy_sync_status = 'saving'").run();
+}
+
+// ----- Paths -----------------------------------------------------------------------------------------------
+
+async function comfyOutputDir(): Promise<string> {
+  const dir = String((await getMachineSettings()).comfyOutputDir || "").trim();
+  if (!dir || !path.isAbsolute(dir)) throw new Error("Set the ComfyUI output folder in Settings (for example E:\\...\\ComfyUI\\output).");
+  return path.resolve(dir);
+}
+
+async function projectsRootChecked(): Promise<string> {
+  const output = await comfyOutputDir();
+  let stat;
+  try { stat = await fs.stat(output); } catch { throw new Error(`The ComfyUI output folder was not found: ${output}. Check the folder in Settings.`); }
+  if (!stat.isDirectory()) throw new Error(`The ComfyUI output folder setting is not a folder: ${output}.`);
+  return path.join(output, "martini_shot");
+}
+
+const originalsFolder = (projectPath: string) => path.join(projectPath, "assets", ORIGINALS_FOLDER);
+
+function folderExists(projectPath: string): boolean {
+  try { return statSync(projectPath).isDirectory(); } catch { return false; }
+}
+
+// ----- Reads -----------------------------------------------------------------------------------------------
+
+function projectRow(id: unknown): ProjectRow {
+  if (typeof id !== "string" || !id) throw new Error("Unknown project.");
+  const row = db().prepare("SELECT * FROM martini_projects WHERE id = ?").get(id) as ProjectRow | undefined;
+  if (!row) throw new Error("That project no longer exists in the local database.");
+  return row;
+}
+
+function assetRows(projectId: string): AssetRow[] {
+  return db().prepare(`SELECT * FROM project_assets WHERE project_id = ? ORDER BY ${ROLE_ORDER}, sort_order, created_at`).all(projectId) as AssetRow[];
+}
+
+function toAsset(row: AssetRow): ProjectAsset {
+  return {
+    id: row.id, role: row.role, displayName: row.display_name, fileName: path.basename(row.original_path),
+    originalPath: row.original_path, storedPath: row.stored_path, checksum: row.checksum, fileSize: row.file_size,
+    durationSeconds: row.duration_seconds, sortOrder: row.sort_order, available: existsSync(row.stored_path),
+    previewUrl: `martini-asset://asset/${row.id}?v=${(row.checksum || "0").slice(0, 12)}`,
+  };
+}
+
+function countRoles(assets: { role: AssetRole }[]): Record<AssetRole, number> {
+  const counts = { song: 0, performer: 0, outfit: 0, location: 0 } as Record<AssetRole, number>;
+  for (const asset of assets) counts[asset.role] += 1;
+  return counts;
+}
+
+function toSummary(row: ProjectRow, assets: ProjectAsset[]): ProjectSummary {
+  const thumb = ["performer", "location", "outfit"].map((role) => assets.find((asset) => asset.role === role)).find(Boolean);
+  return {
+    id: row.id, name: row.name, slug: row.slug, projectPath: row.project_path, status: row.status, createdAt: row.created_at,
+    updatedAt: row.updated_at, lastOpenedAt: row.last_opened_at, folderExists: folderExists(row.project_path),
+    songDurationSeconds: assets.find((asset) => asset.role === "song")?.durationSeconds ?? null,
+    counts: countRoles(assets), thumbnailUrl: thumb?.previewUrl ?? null,
+  };
+}
+
+function detail(row: ProjectRow): ProjectDetail {
+  const assets = assetRows(row.id).map(toAsset);
+  const summary = toSummary(row, assets);
+  return {
+    ...summary, assets, missing: missingRequirements(summary.counts),
+    comfySync: { status: row.comfy_sync_status, savedAt: row.comfy_synced_at, error: row.comfy_sync_error, jobId: row.comfy_sync_job_id },
+  };
+}
+
+export function listProjects(limit = 30): ProjectSummary[] {
+  const rows = db().prepare("SELECT * FROM martini_projects ORDER BY COALESCE(last_opened_at, updated_at) DESC LIMIT ?").all(limit) as ProjectRow[];
+  return rows.map((row) => toSummary(row, assetRows(row.id).map(toAsset)));
+}
+
+export function getProject(id: unknown): ProjectDetail {
+  return detail(projectRow(id));
+}
+
+/** The most recently opened project whose folder still exists, so a launch never reopens into a broken project. */
+export function activeProject(): ProjectDetail | null {
+  const rows = db().prepare("SELECT * FROM martini_projects WHERE last_opened_at IS NOT NULL ORDER BY last_opened_at DESC LIMIT 10").all() as ProjectRow[];
+  const row = rows.find((candidate) => folderExists(candidate.project_path));
+  return row ? detail(row) : null;
+}
+
+export async function projectsOverview(): Promise<ProjectsOverview> {
+  let projectsRoot = "";
+  let rootError: string | null = null;
+  try { projectsRoot = await projectsRootChecked(); }
+  catch (error) {
+    rootError = error instanceof Error ? error.message : String(error);
+    projectsRoot = path.join(String((await getMachineSettings()).comfyOutputDir || ""), "martini_shot");
+  }
+  return { active: activeProject(), recent: listProjects(), projectsRoot, rootError };
+}
+
+// ----- Project create/open ---------------------------------------------------------------------------------
+
+export async function createProject(rawName: unknown): Promise<ProjectDetail> {
+  const { name, slug } = validateProjectName(rawName);
+  const existing = db().prepare("SELECT name FROM martini_projects WHERE slug = ?").get(slug) as { name: string } | undefined;
+  if (existing) throw new Error(`"${existing.name}" already uses the folder name "${slug}". Open it from Recent projects or choose a different name.`);
+  const root = await projectsRootChecked();
+  const projectPath = path.join(root, slug);
+  if (existsSync(projectPath)) {
+    throw new Error(`A folder named "${slug}" already exists in ${root}. It may have been created directly in ComfyUI. Choose a different name so it is not overwritten.`);
+  }
+  try {
+    await fs.mkdir(root, { recursive: true });
+    await fs.mkdir(projectPath);
+    await fs.mkdir(originalsFolder(projectPath), { recursive: true });
+  } catch (error) {
+    throw new Error(`Could not create the project folder ${projectPath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const id = randomUUID();
+  const timestamp = now();
+  db().prepare(`INSERT INTO martini_projects (id, name, slug, project_path, status, created_at, updated_at, last_opened_at, comfy_sync_status)
+    VALUES (?, ?, ?, ?, 'new', ?, ?, ?, 'waiting_for_assets')`).run(id, name, slug, projectPath, timestamp, timestamp, timestamp);
+  return getProject(id);
+}
+
+export function openProject(id: unknown): ProjectDetail {
+  const row = projectRow(id);
+  if (!folderExists(row.project_path)) {
+    throw new Error(`The project folder is missing: ${row.project_path}. It may have been moved, renamed, or deleted outside Martini Shot.`);
+  }
+  db().prepare("UPDATE martini_projects SET last_opened_at = ? WHERE id = ?").run(now(), row.id);
+  return getProject(row.id);
+}
+
+export function projectFolder(id: unknown): string {
+  const row = projectRow(id);
+  if (!folderExists(row.project_path)) throw new Error(`The project folder is missing: ${row.project_path}.`);
+  return row.project_path;
+}
+
+// ----- Assets ----------------------------------------------------------------------------------------------
+
+function editableProject(id: unknown): ProjectRow {
+  const row = projectRow(id);
+  if (!folderExists(row.project_path)) throw new Error(`The project folder is missing: ${row.project_path}. Assets cannot be changed until it is restored.`);
+  return row;
+}
+
+function afterAssetChange(row: ProjectRow, issues: AssetIssue[]): void {
+  const counts = countRoles(assetRows(row.id));
+  const timestamp = now();
+  db().prepare("UPDATE martini_projects SET status = ?, updated_at = ?, comfy_sync_status = ?, comfy_sync_error = NULL WHERE id = ?")
+    .run(statusAfterAssetChange(counts), timestamp, missingRequirements(counts).length ? "waiting_for_assets" : "not_saved", row.id);
+  if (issues.length) {
+    db().prepare("INSERT INTO project_reports (id, project_id, category, body, data, created_at) VALUES (?, ?, 'asset_copy', ?, ?, ?)")
+      .run(randomUUID(), row.id, issues.map((issue) => `${issue.file}: ${issue.reason}`).join("\n"), JSON.stringify(issues), timestamp);
+  }
+  notify(row.id);
+  scheduleComfySync(row.id);
+}
+
+async function removeStoredCopy(projectPath: string, storedPath: string): Promise<void> {
+  // Only the project's own copy may be deleted; the user's original file is never touched.
+  if (!isInside(originalsFolder(projectPath), storedPath)) return;
+  await fs.rm(storedPath, { force: true }).catch(() => undefined);
+}
+
+/** Copies the chosen files into the project. A failing file is reported and skipped; the rest still import. */
+export async function addAssets(projectId: unknown, role: AssetRole, sources: string[]): Promise<AssetChangeResult> {
+  const row = editableProject(projectId);
+  if (!sources.length) return { project: getProject(row.id), added: 0, issues: [], cancelled: true };
+  if (!ROLE_RULES[role].multiple && sources.length > 1) throw new Error("Choose exactly one song file.");
+  const existing = assetRows(row.id);
+  const issues: AssetIssue[] = [];
+  const accepted: Pick<AssetRow, "role" | "checksum" | "display_name">[] = [];
+  let added = 0;
+  let order = Math.max(0, ...existing.filter((asset) => asset.role === role).map((asset) => asset.sort_order + 1));
+  for (const source of sources) {
+    const id = randomUUID();
+    try {
+      const copy = await copyAsset(role, source, originalsFolder(row.project_path), storedFileName(role, id, source));
+      // Same file content in the same role, either already saved or earlier in this same selection.
+      const duplicate = [...existing, ...accepted].find((asset) => asset.role === role && asset.checksum === copy.checksum);
+      if (duplicate && ROLE_RULES[role].multiple) {
+        await removeStoredCopy(row.project_path, copy.storedPath);
+        issues.push({ file: source, reason: `Already in this project as "${duplicate.display_name}".` });
+        continue;
+      }
+      const timestamp = now();
+      db().prepare(`INSERT INTO project_assets (id, project_id, role, display_name, original_path, stored_path, checksum, sort_order, created_at, file_size, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, row.id, role, friendlyName(source), source, copy.storedPath, copy.checksum, order++, timestamp, copy.fileSize, timestamp);
+      accepted.push({ role, checksum: copy.checksum, display_name: friendlyName(source) });
+      added += 1;
+      if (!ROLE_RULES[role].multiple) {
+        // A project has exactly one song: the new one replaces any previous one.
+        for (const old of existing.filter((asset) => asset.role === role)) {
+          db().prepare("DELETE FROM project_assets WHERE id = ?").run(old.id);
+          await removeStoredCopy(row.project_path, old.stored_path);
+        }
+      }
+    } catch (error) {
+      issues.push({ file: source, reason: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  if (added || issues.length) afterAssetChange(row, issues);
+  return { project: getProject(row.id), added, issues, cancelled: false };
+}
+
+function ownedAsset(row: ProjectRow, assetId: unknown): AssetRow {
+  if (typeof assetId !== "string" || !assetId) throw new Error("Unknown asset.");
+  const asset = db().prepare("SELECT * FROM project_assets WHERE id = ? AND project_id = ?").get(assetId, row.id) as AssetRow | undefined;
+  if (!asset) throw new Error("That asset is no longer part of this project.");
+  return asset;
+}
+
+export async function removeAsset(projectId: unknown, assetId: unknown): Promise<ProjectDetail> {
+  const row = editableProject(projectId);
+  const asset = ownedAsset(row, assetId);
+  db().prepare("DELETE FROM project_assets WHERE id = ?").run(asset.id);
+  const remaining = assetRows(row.id).filter((item) => item.role === asset.role);
+  remaining.forEach((item, index) => db().prepare("UPDATE project_assets SET sort_order = ? WHERE id = ?").run(index, item.id));
+  await removeStoredCopy(row.project_path, asset.stored_path);
+  afterAssetChange(row, []);
+  return getProject(row.id);
+}
+
+export function assetRole(projectId: unknown, assetId: unknown): AssetRole {
+  return ownedAsset(projectRow(projectId), assetId).role;
+}
+
+/** Swaps one asset's file in place, keeping its position. The old project copy is deleted only after the new copy succeeds. */
+export async function replaceAsset(projectId: unknown, assetId: unknown, source: string | undefined): Promise<AssetChangeResult> {
+  const row = editableProject(projectId);
+  const asset = ownedAsset(row, assetId);
+  if (!source) return { project: getProject(row.id), added: 0, issues: [], cancelled: true };
+  try {
+    const copy = await copyAsset(asset.role, source, originalsFolder(row.project_path), storedFileName(asset.role, randomUUID(), source));
+    db().prepare(`UPDATE project_assets SET display_name = ?, original_path = ?, stored_path = ?, checksum = ?, file_size = ?, duration_seconds = NULL, updated_at = ?
+      WHERE id = ?`).run(friendlyName(source), source, copy.storedPath, copy.checksum, copy.fileSize, now(), asset.id);
+    await removeStoredCopy(row.project_path, asset.stored_path);
+    afterAssetChange(row, []);
+    return { project: getProject(row.id), added: 1, issues: [], cancelled: false };
+  } catch (error) {
+    const issues = [{ file: source, reason: error instanceof Error ? error.message : String(error) }];
+    afterAssetChange(row, issues);
+    return { project: getProject(row.id), added: 0, issues, cancelled: false };
+  }
+}
+
+/** Song duration is measured by the renderer's audio decoder and stored for the recent-projects list. */
+export function recordSongDuration(projectId: unknown, assetId: unknown, seconds: unknown): void {
+  const asset = ownedAsset(projectRow(projectId), assetId);
+  if (asset.role !== "song") throw new Error("Only songs have a duration.");
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0 || seconds > 6 * 3600) throw new Error("Invalid song duration.");
+  if (asset.duration_seconds !== null && Math.abs(asset.duration_seconds - seconds) < 0.01) return;
+  db().prepare("UPDATE project_assets SET duration_seconds = ? WHERE id = ?").run(seconds, asset.id);
+}
+
+/** Resolves a preview request to the project's stored copy only. */
+export function previewFile(assetId: string): string | null {
+  const asset = db().prepare("SELECT a.stored_path, p.project_path FROM project_assets a JOIN martini_projects p ON p.id = a.project_id WHERE a.id = ?")
+    .get(assetId) as { stored_path: string; project_path: string } | undefined;
+  if (!asset || !isInside(asset.project_path, asset.stored_path) || !existsSync(asset.stored_path)) return null;
+  return asset.stored_path;
+}
+
+// ----- ComfyUI project file (workflows/01-create-project.json) ---------------------------------------------
+
+const syncState = new Map<string, "running" | "rerun">();
+
+function setSync(projectId: string, status: ComfySyncStatus, fields: { error?: string | null; savedAt?: string; jobId?: string } = {}): void {
+  db().prepare(`UPDATE martini_projects SET comfy_sync_status = ?, comfy_sync_error = ?,
+    comfy_synced_at = COALESCE(?, comfy_synced_at), comfy_sync_job_id = COALESCE(?, comfy_sync_job_id) WHERE id = ?`)
+    .run(status, fields.error ?? null, fields.savedAt ?? null, fields.jobId ?? null, projectId);
+  notify(projectId);
+}
+
+/** Coalesces bursts of asset edits into one ComfyUI run per project; all ComfyUI work is serialized. */
+export function scheduleComfySync(projectId: string): void {
+  if (syncState.get(projectId)) { syncState.set(projectId, "rerun"); return; }
+  syncState.set(projectId, "running");
+  void serializeComfyWork(async () => {
+    try {
+      do {
+        syncState.set(projectId, "running");
+        await syncProjectToComfy(projectId);
+      } while (syncState.get(projectId) === "rerun");
+    } finally { syncState.delete(projectId); }
+  }).catch(() => undefined);
+}
+
+/** Called from inside serialized ComfyUI work (e.g. before planning): makes sure project.json reflects the current assets.
+ *  Returns null when saved, otherwise the reason it is not. */
+export async function ensureComfyProjectSaved(projectId: string): Promise<string | null> {
+  const row = projectRow(projectId);
+  if (row.comfy_sync_status !== "saved" || !existsSync(path.join(row.project_path, "project.json"))) await syncProjectToComfy(projectId);
+  const after = projectRow(projectId);
+  if (after.comfy_sync_status === "saved") return null;
+  return after.comfy_sync_error || (after.comfy_sync_status === "waiting_for_assets" ? missingRequirements(countRoles(assetRows(projectId))).join(". ") : "The project has not been saved through ComfyUI.");
+}
+
+/** Supplied location reference names exactly as Martini Shot Project saved them (the asset display names). */
+export function suppliedLocationNames(projectId: string): string[] {
+  return assetRows(projectId).filter((asset) => asset.role === "location").map((asset) => asset.display_name);
+}
+
+export function projectAssetsForPlanning(projectId: string): { role: string; checksum: string | null; displayName: string }[] {
+  return assetRows(projectId).map((asset) => ({ role: asset.role, checksum: asset.checksum, displayName: asset.display_name }));
+}
+
+export function projectIdentity(id: unknown): { id: string; name: string; slug: string; projectPath: string } {
+  const row = projectRow(id);
+  return { id: row.id, name: row.name, slug: row.slug, projectPath: row.project_path };
+}
+
+async function syncProjectToComfy(projectId: string): Promise<void> {
+  let row: ProjectRow;
+  try { row = projectRow(projectId); } catch { return; }
+  const assets = assetRows(row.id);
+  if (missingRequirements(countRoles(assets)).length) { setSync(row.id, "waiting_for_assets"); return; }
+  setSync(row.id, "saving");
+  try {
+    const output = await comfyOutputDir();
+    const missingFiles = assets.filter((asset) => !existsSync(asset.stored_path));
+    if (missingFiles.length) throw new Error(`These project copies are missing; replace them: ${missingFiles.map((asset) => asset.display_name).join(", ")}.`);
+    const song = assets.find((asset) => asset.role === "song")!;
+    const references: CreateProjectReference[] = assets.filter((asset) => asset.role !== "song").map((asset) => ({
+      imageFile: comfyOutputReference(output, asset.stored_path), kind: ROLE_RULES[asset.role].comfyKind as CreateProjectReference["kind"], name: asset.display_name,
+    }));
+    const values = { projectName: row.slug, songFile: comfyOutputReference(output, song.stored_path), references };
+    const run = await runWorkflowTemplate(development, "01-create-project.json", {}, row.id, (template) => buildCreateProjectPrompt(template, values));
+    const manifest = path.join(row.project_path, "project.json");
+    if (!existsSync(manifest)) {
+      throw new Error(`ComfyUI finished, but ${manifest} was not written. Check that the ComfyUI output folder in Settings is the folder the running ComfyUI uses.`);
+    }
+    const report = createProjectReport(run.outputs);
+    if (report) {
+      db().prepare("INSERT INTO project_reports (id, project_id, category, body, created_at) VALUES (?, ?, 'comfy_project', ?, ?)").run(randomUUID(), row.id, report, now());
+    }
+    setSync(row.id, "saved", { savedAt: now(), jobId: run.job.id });
+  } catch (error) {
+    setSync(row.id, "failed", { error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+export function retryComfySync(projectId: unknown): ProjectDetail {
+  const row = projectRow(projectId);
+  scheduleComfySync(row.id);
+  return getProject(row.id);
+}
+

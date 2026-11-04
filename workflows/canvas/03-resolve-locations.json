@@ -1,0 +1,252 @@
+{
+  "id": "martini-shot-inspect-03-resolve-locations.json",
+  "revision": 0,
+  "last_node_id": 5,
+  "last_link_id": 5,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "MartiniShotOpenProject",
+      "title": "open — MartiniShotOpenProject",
+      "pos": [
+        0,
+        0
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "project_name",
+          "type": "STRING",
+          "widget": {
+            "name": "project_name"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            1,
+            2
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MartiniShotOpenProject",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        "{{project_name}}"
+      ]
+    },
+    {
+      "id": 2,
+      "type": "MartiniShotLoadStoryPlan",
+      "title": "story — MartiniShotLoadStoryPlan",
+      "pos": [
+        0,
+        180
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "project",
+          "type": "*",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            3
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MartiniShotLoadStoryPlan",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 3,
+      "type": "MartiniShotResolveLocations",
+      "title": "resolve — MartiniShotResolveLocations",
+      "pos": [
+        0,
+        360
+      ],
+      "size": [
+        320,
+        98
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "project",
+          "type": "*",
+          "link": 2
+        },
+        {
+          "name": "story_plan",
+          "type": "*",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 1",
+          "type": "*",
+          "slot_index": 1,
+          "links": [
+            4
+          ]
+        },
+        {
+          "name": "output 2",
+          "type": "*",
+          "slot_index": 2,
+          "links": [
+            5
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MartiniShotResolveLocations",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 4,
+      "type": "PreviewAny",
+      "title": "report — PreviewAny",
+      "pos": [
+        0,
+        540
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 4
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewAny",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 5,
+      "type": "PreviewAny",
+      "title": "ready_to_produce — PreviewAny",
+      "pos": [
+        0,
+        720
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 5
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewAny",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": []
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      2,
+      0,
+      "*"
+    ],
+    [
+      2,
+      1,
+      0,
+      3,
+      0,
+      "*"
+    ],
+    [
+      3,
+      2,
+      0,
+      3,
+      1,
+      "*"
+    ],
+    [
+      4,
+      3,
+      1,
+      4,
+      0,
+      "*"
+    ],
+    [
+      5,
+      3,
+      2,
+      5,
+      0,
+      "*"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "frontendVersion": "Martini Shot inspection export",
+    "workflowRendererVersion": "LG",
+    "martiniShotInspection": {
+      "sourceTemplate": "03-resolve-locations.json",
+      "warning": "INSPECTION ONLY. Martini Shot fills {{placeholders}} and project objects at runtime. Do not queue this canvas workflow as-is."
+    }
+  },
+  "version": 0.4
+}

@@ -1,0 +1,35 @@
+{
+  "name": "06-stitch-video.json",
+  "stage": "stitch",
+  "description": "Joins every rendered clip of the saved Martini Shot render package, in order, with the original song into one local MP4 (Martini Shot Finalize Video: ffmpeg concat without re-encoding video, AAC song audio). Never overwrites an earlier final video. Submitted once per Stitch final video, only after Martini Shot has confirmed every clip is rendered.",
+  "prompt": {
+    "open": {
+      "class_type": "MartiniShotOpenProject",
+      "inputs": { "project_name": "{{project_name}}" }
+    },
+    "status": {
+      "class_type": "MartiniShotProjectStatus",
+      "inputs": { "project": ["open", 0] }
+    },
+    "status_json": {
+      "class_type": "PreviewAny",
+      "inputs": { "source": ["status", 0] }
+    },
+    "finalize": {
+      "class_type": "MartiniShotFinalizeVideo",
+      "inputs": {
+        "render_package": { "__value__": "{{render_package}}" },
+        "output_name": "final",
+        "overwrite": false
+      }
+    },
+    "video_path": {
+      "class_type": "PreviewAny",
+      "inputs": { "source": ["finalize", 0] }
+    },
+    "stitch_report": {
+      "class_type": "PreviewAny",
+      "inputs": { "source": ["finalize", 1] }
+    }
+  }
+}

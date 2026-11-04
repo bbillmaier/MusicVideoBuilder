@@ -1,0 +1,15 @@
+{
+  "name": "00-connectivity-test.json",
+  "stage": "connectivity_test",
+  "description": "Writes a small local proof file through ComfyUI so the app can verify submit, history, and cleanup behavior.",
+  "prompt": {
+    "1": {
+      "class_type": "SaveText",
+      "inputs": {
+        "text": "Martini Shot local ComfyUI connection confirmed.",
+        "filename_prefix": "martini_shot/connectivity",
+        "format": "txt"
+      }
+    }
+  }
+}

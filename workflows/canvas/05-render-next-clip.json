@@ -1,0 +1,2061 @@
+{
+  "id": "martini-shot-inspect-05-render-next-clip.json",
+  "revision": 0,
+  "last_node_id": 26,
+  "last_link_id": 45,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "MartiniShotLoadRenderClip",
+      "title": "clip — MartiniShotLoadRenderClip",
+      "pos": [
+        0,
+        0
+      ],
+      "size": [
+        320,
+        122
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "render_package",
+          "type": "STRING",
+          "widget": {
+            "name": "render_package"
+          },
+          "link": null
+        },
+        {
+          "name": "mode",
+          "type": "STRING",
+          "widget": {
+            "name": "mode"
+          },
+          "link": null
+        },
+        {
+          "name": "clip_index",
+          "type": "STRING",
+          "widget": {
+            "name": "clip_index"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            7
+          ]
+        },
+        {
+          "name": "output 1",
+          "type": "*",
+          "slot_index": 1,
+          "links": [
+            11
+          ]
+        },
+        {
+          "name": "output 2",
+          "type": "*",
+          "slot_index": 2,
+          "links": [
+            12
+          ]
+        },
+        {
+          "name": "output 3",
+          "type": "*",
+          "slot_index": 3,
+          "links": [
+            13
+          ]
+        },
+        {
+          "name": "output 4",
+          "type": "*",
+          "slot_index": 4,
+          "links": [
+            14
+          ]
+        },
+        {
+          "name": "output 5",
+          "type": "*",
+          "slot_index": 5,
+          "links": [
+            15
+          ]
+        },
+        {
+          "name": "output 6",
+          "type": "*",
+          "slot_index": 6,
+          "links": [
+            16,
+            22
+          ]
+        },
+        {
+          "name": "output 7",
+          "type": "*",
+          "slot_index": 7,
+          "links": [
+            43
+          ]
+        },
+        {
+          "name": "output 8",
+          "type": "*",
+          "slot_index": 8,
+          "links": [
+            21
+          ]
+        },
+        {
+          "name": "output 9",
+          "type": "*",
+          "slot_index": 9,
+          "links": [
+            10
+          ]
+        },
+        {
+          "name": "output 10",
+          "type": "*",
+          "slot_index": 10,
+          "links": [
+            40
+          ]
+        },
+        {
+          "name": "output 11",
+          "type": "*",
+          "slot_index": 11,
+          "links": [
+            41
+          ]
+        },
+        {
+          "name": "output 12",
+          "type": "*",
+          "slot_index": 12,
+          "links": [
+            45
+          ]
+        },
+        {
+          "name": "output 13",
+          "type": "*",
+          "slot_index": 13,
+          "links": [
+            1
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MartiniShotLoadRenderClip",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        "\"{{render_package}}\"",
+        "{{loader_mode}}",
+        "{{clip_index}}"
+      ]
+    },
+    {
+      "id": 2,
+      "type": "PreviewAny",
+      "title": "clip_report — PreviewAny",
+      "pos": [
+        0,
+        180
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 1
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewAny",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 3,
+      "type": "RandomNoise",
+      "title": "noise — RandomNoise",
+      "pos": [
+        0,
+        360
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "noise_seed",
+          "type": "STRING",
+          "widget": {
+            "name": "noise_seed"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            28
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "RandomNoise",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        "{{noise_seed}}"
+      ]
+    },
+    {
+      "id": 4,
+      "type": "MartiniShotRenderResolution",
+      "title": "resolution — MartiniShotRenderResolution",
+      "pos": [
+        0,
+        540
+      ],
+      "size": [
+        320,
+        122
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "aspect_ratio",
+          "type": "STRING",
+          "widget": {
+            "name": "aspect_ratio"
+          },
+          "link": null
+        },
+        {
+          "name": "megapixels",
+          "type": "STRING",
+          "widget": {
+            "name": "megapixels"
+          },
+          "link": null
+        },
+        {
+          "name": "multiple",
+          "type": "STRING",
+          "widget": {
+            "name": "multiple"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            8
+          ]
+        },
+        {
+          "name": "output 1",
+          "type": "*",
+          "slot_index": 1,
+          "links": [
+            9
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MartiniShotRenderResolution",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        "{{aspect_ratio}}",
+        "{{render_megapixels}}",
+        32
+      ]
+    },
+    {
+      "id": 5,
+      "type": "UNETLoader",
+      "title": "unet — UNETLoader",
+      "pos": [
+        0,
+        720
+      ],
+      "size": [
+        320,
+        98
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "unet_name",
+          "type": "STRING",
+          "widget": {
+            "name": "unet_name"
+          },
+          "link": null
+        },
+        {
+          "name": "weight_dtype",
+          "type": "STRING",
+          "widget": {
+            "name": "weight_dtype"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            2
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "UNETLoader",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        "singularityV2X10eros_prismPIKA.safetensors",
+        "default"
+      ]
+    },
+    {
+      "id": 6,
+      "type": "MiniMaxH3SigmaShift",
+      "title": "shift — MiniMaxH3SigmaShift",
+      "pos": [
+        360,
+        0
+      ],
+      "size": [
+        320,
+        122
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "*",
+          "link": 2
+        },
+        {
+          "name": "shift_video",
+          "type": "STRING",
+          "widget": {
+            "name": "shift_video"
+          },
+          "link": null
+        },
+        {
+          "name": "shift_audio",
+          "type": "STRING",
+          "widget": {
+            "name": "shift_audio"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            3,
+            25
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MiniMaxH3SigmaShift",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        12,
+        3
+      ]
+    },
+    {
+      "id": 7,
+      "type": "MartiniShotLivePreview",
+      "title": "live_preview — MartiniShotLivePreview",
+      "pos": [
+        360,
+        180
+      ],
+      "size": [
+        320,
+        218
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "*",
+          "link": 3
+        },
+        {
+          "name": "enabled",
+          "type": "STRING",
+          "widget": {
+            "name": "enabled"
+          },
+          "link": null
+        },
+        {
+          "name": "max_resolution",
+          "type": "STRING",
+          "widget": {
+            "name": "max_resolution"
+          },
+          "link": null
+        },
+        {
+          "name": "jpeg_quality",
+          "type": "STRING",
+          "widget": {
+            "name": "jpeg_quality"
+          },
+          "link": null
+        },
+        {
+          "name": "preview_frames",
+          "type": "STRING",
+          "widget": {
+            "name": "preview_frames"
+          },
+          "link": null
+        },
+        {
+          "name": "preview_fps",
+          "type": "STRING",
+          "widget": {
+            "name": "preview_fps"
+          },
+          "link": null
+        },
+        {
+          "name": "tiny_vae",
+          "type": "STRING",
+          "widget": {
+            "name": "tiny_vae"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            26
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MartiniShotLivePreview",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        "{{livePreviews}}",
+        768,
+        70,
+        6,
+        12,
+        "taeh3.safetensors"
+      ]
+    },
+    {
+      "id": 8,
+      "type": "CLIPLoader",
+      "title": "text_encoder — CLIPLoader",
+      "pos": [
+        360,
+        360
+      ],
+      "size": [
+        320,
+        122
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip_name",
+          "type": "STRING",
+          "widget": {
+            "name": "clip_name"
+          },
+          "link": null
+        },
+        {
+          "name": "type",
+          "type": "STRING",
+          "widget": {
+            "name": "type"
+          },
+          "link": null
+        },
+        {
+          "name": "device",
+          "type": "STRING",
+          "widget": {
+            "name": "device"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            4
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPLoader",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        "qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+        "minimax",
+        "default"
+      ]
+    },
+    {
+      "id": 9,
+      "type": "VAELoader",
+      "title": "video_vae — VAELoader",
+      "pos": [
+        360,
+        540
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "vae_name",
+          "type": "STRING",
+          "widget": {
+            "name": "vae_name"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            5,
+            19,
+            36
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAELoader",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        "minimax_h3_video_vae_fp16.safetensors"
+      ]
+    },
+    {
+      "id": 10,
+      "type": "VAELoader",
+      "title": "audio_vae — VAELoader",
+      "pos": [
+        360,
+        720
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "vae_name",
+          "type": "STRING",
+          "widget": {
+            "name": "vae_name"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            6,
+            20
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAELoader",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        "minimax_h3_audio_vae_fp32.safetensors"
+      ]
+    },
+    {
+      "id": 11,
+      "type": "MiniMaxH3ReferenceToVideo",
+      "title": "ref2v — MiniMaxH3ReferenceToVideo",
+      "pos": [
+        720,
+        0
+      ],
+      "size": [
+        320,
+        386
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "*",
+          "link": 4
+        },
+        {
+          "name": "vae",
+          "type": "*",
+          "link": 5
+        },
+        {
+          "name": "audio_vae",
+          "type": "*",
+          "link": 6
+        },
+        {
+          "name": "prompt",
+          "type": "*",
+          "link": 7
+        },
+        {
+          "name": "width",
+          "type": "*",
+          "link": 8
+        },
+        {
+          "name": "height",
+          "type": "*",
+          "link": 9
+        },
+        {
+          "name": "length",
+          "type": "*",
+          "link": 10
+        },
+        {
+          "name": "ref_image_size",
+          "type": "STRING",
+          "widget": {
+            "name": "ref_image_size"
+          },
+          "link": null
+        },
+        {
+          "name": "ref_images.ref_image_0",
+          "type": "*",
+          "link": 11
+        },
+        {
+          "name": "ref_images.ref_image_1",
+          "type": "*",
+          "link": 12
+        },
+        {
+          "name": "ref_images.ref_image_2",
+          "type": "*",
+          "link": 13
+        },
+        {
+          "name": "ref_images.ref_image_3",
+          "type": "*",
+          "link": 14
+        },
+        {
+          "name": "ref_images.ref_image_4",
+          "type": "*",
+          "link": 15
+        },
+        {
+          "name": "ref_audios.ref_audio_0",
+          "type": "*",
+          "link": 16
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            17
+          ]
+        },
+        {
+          "name": "output 1",
+          "type": "*",
+          "slot_index": 1,
+          "links": [
+            18,
+            23
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MiniMaxH3ReferenceToVideo",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        "match"
+      ]
+    },
+    {
+      "id": 12,
+      "type": "MiniMaxH3AddGuide",
+      "title": "guide_1 — MiniMaxH3AddGuide",
+      "pos": [
+        720,
+        180
+      ],
+      "size": [
+        320,
+        218
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "positive",
+          "type": "*",
+          "link": 17
+        },
+        {
+          "name": "latent",
+          "type": "*",
+          "link": 18
+        },
+        {
+          "name": "vae",
+          "type": "*",
+          "link": 19
+        },
+        {
+          "name": "audio_vae",
+          "type": "*",
+          "link": 20
+        },
+        {
+          "name": "image",
+          "type": "*",
+          "link": 21
+        },
+        {
+          "name": "audio",
+          "type": "*",
+          "link": 22
+        },
+        {
+          "name": "frame_idx",
+          "type": "STRING",
+          "widget": {
+            "name": "frame_idx"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            27
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MiniMaxH3AddGuide",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        0
+      ]
+    },
+    {
+      "id": 13,
+      "type": "VRAMCleanup",
+      "title": "vram_cleanup_before_sample — VRAMCleanup",
+      "pos": [
+        720,
+        360
+      ],
+      "size": [
+        320,
+        122
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "anything",
+          "type": "*",
+          "link": 23
+        },
+        {
+          "name": "offload_model",
+          "type": "STRING",
+          "widget": {
+            "name": "offload_model"
+          },
+          "link": null
+        },
+        {
+          "name": "offload_cache",
+          "type": "STRING",
+          "widget": {
+            "name": "offload_cache"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            24
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VRAMCleanup",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        true,
+        true
+      ]
+    },
+    {
+      "id": 14,
+      "type": "RAMCleanup",
+      "title": "ram_cleanup_before_sample — RAMCleanup",
+      "pos": [
+        720,
+        540
+      ],
+      "size": [
+        320,
+        170
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "anything",
+          "type": "*",
+          "link": 24
+        },
+        {
+          "name": "clean_file_cache",
+          "type": "STRING",
+          "widget": {
+            "name": "clean_file_cache"
+          },
+          "link": null
+        },
+        {
+          "name": "clean_processes",
+          "type": "STRING",
+          "widget": {
+            "name": "clean_processes"
+          },
+          "link": null
+        },
+        {
+          "name": "clean_dlls",
+          "type": "STRING",
+          "widget": {
+            "name": "clean_dlls"
+          },
+          "link": null
+        },
+        {
+          "name": "retry_times",
+          "type": "STRING",
+          "widget": {
+            "name": "retry_times"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            32
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "RAMCleanup",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        true,
+        true,
+        true,
+        3
+      ]
+    },
+    {
+      "id": 15,
+      "type": "KSamplerSelect",
+      "title": "sampler — KSamplerSelect",
+      "pos": [
+        720,
+        720
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "sampler_name",
+          "type": "STRING",
+          "widget": {
+            "name": "sampler_name"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            30
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "KSamplerSelect",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        "euler"
+      ]
+    },
+    {
+      "id": 16,
+      "type": "BasicScheduler",
+      "title": "sigmas_1 — BasicScheduler",
+      "pos": [
+        1080,
+        0
+      ],
+      "size": [
+        320,
+        146
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "*",
+          "link": 25
+        },
+        {
+          "name": "scheduler",
+          "type": "STRING",
+          "widget": {
+            "name": "scheduler"
+          },
+          "link": null
+        },
+        {
+          "name": "steps",
+          "type": "STRING",
+          "widget": {
+            "name": "steps"
+          },
+          "link": null
+        },
+        {
+          "name": "denoise",
+          "type": "STRING",
+          "widget": {
+            "name": "denoise"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            31
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "BasicScheduler",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        "simple",
+        8,
+        1
+      ]
+    },
+    {
+      "id": 17,
+      "type": "BasicGuider",
+      "title": "guider_1 — BasicGuider",
+      "pos": [
+        1080,
+        180
+      ],
+      "size": [
+        320,
+        98
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "*",
+          "link": 26
+        },
+        {
+          "name": "conditioning",
+          "type": "*",
+          "link": 27
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            29
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "BasicGuider",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 18,
+      "type": "SamplerCustomAdvanced",
+      "title": "pass_1 — SamplerCustomAdvanced",
+      "pos": [
+        1080,
+        360
+      ],
+      "size": [
+        320,
+        170
+      ],
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "noise",
+          "type": "*",
+          "link": 28
+        },
+        {
+          "name": "guider",
+          "type": "*",
+          "link": 29
+        },
+        {
+          "name": "sampler",
+          "type": "*",
+          "link": 30
+        },
+        {
+          "name": "sigmas",
+          "type": "*",
+          "link": 31
+        },
+        {
+          "name": "latent_image",
+          "type": "*",
+          "link": 32
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 1",
+          "type": "*",
+          "slot_index": 1,
+          "links": [
+            33
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SamplerCustomAdvanced",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 19,
+      "type": "VRAMCleanup",
+      "title": "vram_cleanup_after_sample — VRAMCleanup",
+      "pos": [
+        1080,
+        540
+      ],
+      "size": [
+        320,
+        122
+      ],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "anything",
+          "type": "*",
+          "link": 33
+        },
+        {
+          "name": "offload_model",
+          "type": "STRING",
+          "widget": {
+            "name": "offload_model"
+          },
+          "link": null
+        },
+        {
+          "name": "offload_cache",
+          "type": "STRING",
+          "widget": {
+            "name": "offload_cache"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            34
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VRAMCleanup",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        true,
+        true
+      ]
+    },
+    {
+      "id": 20,
+      "type": "RAMCleanup",
+      "title": "ram_cleanup_after_sample — RAMCleanup",
+      "pos": [
+        1080,
+        720
+      ],
+      "size": [
+        320,
+        170
+      ],
+      "flags": {},
+      "order": 19,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "anything",
+          "type": "*",
+          "link": 34
+        },
+        {
+          "name": "clean_file_cache",
+          "type": "STRING",
+          "widget": {
+            "name": "clean_file_cache"
+          },
+          "link": null
+        },
+        {
+          "name": "clean_processes",
+          "type": "STRING",
+          "widget": {
+            "name": "clean_processes"
+          },
+          "link": null
+        },
+        {
+          "name": "clean_dlls",
+          "type": "STRING",
+          "widget": {
+            "name": "clean_dlls"
+          },
+          "link": null
+        },
+        {
+          "name": "retry_times",
+          "type": "STRING",
+          "widget": {
+            "name": "retry_times"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            35
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "RAMCleanup",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        true,
+        true,
+        true,
+        3
+      ]
+    },
+    {
+      "id": 21,
+      "type": "VAEDecode",
+      "title": "decode — VAEDecode",
+      "pos": [
+        1440,
+        0
+      ],
+      "size": [
+        320,
+        98
+      ],
+      "flags": {},
+      "order": 20,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "*",
+          "link": 35
+        },
+        {
+          "name": "vae",
+          "type": "*",
+          "link": 36
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            37
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAEDecode",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 22,
+      "type": "VRAMCleanup",
+      "title": "vram_cleanup_after_decode — VRAMCleanup",
+      "pos": [
+        1440,
+        180
+      ],
+      "size": [
+        320,
+        122
+      ],
+      "flags": {},
+      "order": 21,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "anything",
+          "type": "*",
+          "link": 37
+        },
+        {
+          "name": "offload_model",
+          "type": "STRING",
+          "widget": {
+            "name": "offload_model"
+          },
+          "link": null
+        },
+        {
+          "name": "offload_cache",
+          "type": "STRING",
+          "widget": {
+            "name": "offload_cache"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            38
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VRAMCleanup",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        true,
+        true
+      ]
+    },
+    {
+      "id": 23,
+      "type": "RAMCleanup",
+      "title": "ram_cleanup_after_decode — RAMCleanup",
+      "pos": [
+        1440,
+        360
+      ],
+      "size": [
+        320,
+        170
+      ],
+      "flags": {},
+      "order": 22,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "anything",
+          "type": "*",
+          "link": 38
+        },
+        {
+          "name": "clean_file_cache",
+          "type": "STRING",
+          "widget": {
+            "name": "clean_file_cache"
+          },
+          "link": null
+        },
+        {
+          "name": "clean_processes",
+          "type": "STRING",
+          "widget": {
+            "name": "clean_processes"
+          },
+          "link": null
+        },
+        {
+          "name": "clean_dlls",
+          "type": "STRING",
+          "widget": {
+            "name": "clean_dlls"
+          },
+          "link": null
+        },
+        {
+          "name": "retry_times",
+          "type": "STRING",
+          "widget": {
+            "name": "retry_times"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            39
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "RAMCleanup",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        true,
+        true,
+        true,
+        3
+      ]
+    },
+    {
+      "id": 24,
+      "type": "MiniMaxH3TrimOverlap",
+      "title": "trim — MiniMaxH3TrimOverlap",
+      "pos": [
+        1440,
+        540
+      ],
+      "size": [
+        320,
+        122
+      ],
+      "flags": {},
+      "order": 23,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "*",
+          "link": 39
+        },
+        {
+          "name": "trim_frames",
+          "type": "*",
+          "link": 40
+        },
+        {
+          "name": "trim_end",
+          "type": "*",
+          "link": 41
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            42
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MiniMaxH3TrimOverlap",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 25,
+      "type": "CreateVideo",
+      "title": "video — CreateVideo",
+      "pos": [
+        1440,
+        720
+      ],
+      "size": [
+        320,
+        194
+      ],
+      "flags": {},
+      "order": 24,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "*",
+          "link": 42
+        },
+        {
+          "name": "audio",
+          "type": "*",
+          "link": 43
+        },
+        {
+          "name": "fps",
+          "type": "STRING",
+          "widget": {
+            "name": "fps"
+          },
+          "link": null
+        },
+        {
+          "name": "bit_depth",
+          "type": "STRING",
+          "widget": {
+            "name": "bit_depth"
+          },
+          "link": null
+        },
+        {
+          "name": "color_space",
+          "type": "STRING",
+          "widget": {
+            "name": "color_space"
+          },
+          "link": null
+        },
+        {
+          "name": "codec",
+          "type": "STRING",
+          "widget": {
+            "name": "codec"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            44
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CreateVideo",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        24,
+        "auto",
+        "sRGB",
+        "none"
+      ]
+    },
+    {
+      "id": 26,
+      "type": "SaveVideo",
+      "title": "save — SaveVideo",
+      "pos": [
+        1800,
+        0
+      ],
+      "size": [
+        320,
+        146
+      ],
+      "flags": {},
+      "order": 25,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video",
+          "type": "*",
+          "link": 44
+        },
+        {
+          "name": "filename_prefix",
+          "type": "*",
+          "link": 45
+        },
+        {
+          "name": "format",
+          "type": "STRING",
+          "widget": {
+            "name": "format"
+          },
+          "link": null
+        },
+        {
+          "name": "format.codec",
+          "type": "STRING",
+          "widget": {
+            "name": "format.codec"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "SaveVideo",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        "mp4",
+        "auto"
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      13,
+      2,
+      0,
+      "*"
+    ],
+    [
+      2,
+      5,
+      0,
+      6,
+      0,
+      "*"
+    ],
+    [
+      3,
+      6,
+      0,
+      7,
+      0,
+      "*"
+    ],
+    [
+      4,
+      8,
+      0,
+      11,
+      0,
+      "*"
+    ],
+    [
+      5,
+      9,
+      0,
+      11,
+      1,
+      "*"
+    ],
+    [
+      6,
+      10,
+      0,
+      11,
+      2,
+      "*"
+    ],
+    [
+      7,
+      1,
+      0,
+      11,
+      3,
+      "*"
+    ],
+    [
+      8,
+      4,
+      0,
+      11,
+      4,
+      "*"
+    ],
+    [
+      9,
+      4,
+      1,
+      11,
+      5,
+      "*"
+    ],
+    [
+      10,
+      1,
+      9,
+      11,
+      6,
+      "*"
+    ],
+    [
+      11,
+      1,
+      1,
+      11,
+      8,
+      "*"
+    ],
+    [
+      12,
+      1,
+      2,
+      11,
+      9,
+      "*"
+    ],
+    [
+      13,
+      1,
+      3,
+      11,
+      10,
+      "*"
+    ],
+    [
+      14,
+      1,
+      4,
+      11,
+      11,
+      "*"
+    ],
+    [
+      15,
+      1,
+      5,
+      11,
+      12,
+      "*"
+    ],
+    [
+      16,
+      1,
+      6,
+      11,
+      13,
+      "*"
+    ],
+    [
+      17,
+      11,
+      0,
+      12,
+      0,
+      "*"
+    ],
+    [
+      18,
+      11,
+      1,
+      12,
+      1,
+      "*"
+    ],
+    [
+      19,
+      9,
+      0,
+      12,
+      2,
+      "*"
+    ],
+    [
+      20,
+      10,
+      0,
+      12,
+      3,
+      "*"
+    ],
+    [
+      21,
+      1,
+      8,
+      12,
+      4,
+      "*"
+    ],
+    [
+      22,
+      1,
+      6,
+      12,
+      5,
+      "*"
+    ],
+    [
+      23,
+      11,
+      1,
+      13,
+      0,
+      "*"
+    ],
+    [
+      24,
+      13,
+      0,
+      14,
+      0,
+      "*"
+    ],
+    [
+      25,
+      6,
+      0,
+      16,
+      0,
+      "*"
+    ],
+    [
+      26,
+      7,
+      0,
+      17,
+      0,
+      "*"
+    ],
+    [
+      27,
+      12,
+      0,
+      17,
+      1,
+      "*"
+    ],
+    [
+      28,
+      3,
+      0,
+      18,
+      0,
+      "*"
+    ],
+    [
+      29,
+      17,
+      0,
+      18,
+      1,
+      "*"
+    ],
+    [
+      30,
+      15,
+      0,
+      18,
+      2,
+      "*"
+    ],
+    [
+      31,
+      16,
+      0,
+      18,
+      3,
+      "*"
+    ],
+    [
+      32,
+      14,
+      0,
+      18,
+      4,
+      "*"
+    ],
+    [
+      33,
+      18,
+      1,
+      19,
+      0,
+      "*"
+    ],
+    [
+      34,
+      19,
+      0,
+      20,
+      0,
+      "*"
+    ],
+    [
+      35,
+      20,
+      0,
+      21,
+      0,
+      "*"
+    ],
+    [
+      36,
+      9,
+      0,
+      21,
+      1,
+      "*"
+    ],
+    [
+      37,
+      21,
+      0,
+      22,
+      0,
+      "*"
+    ],
+    [
+      38,
+      22,
+      0,
+      23,
+      0,
+      "*"
+    ],
+    [
+      39,
+      23,
+      0,
+      24,
+      0,
+      "*"
+    ],
+    [
+      40,
+      1,
+      10,
+      24,
+      1,
+      "*"
+    ],
+    [
+      41,
+      1,
+      11,
+      24,
+      2,
+      "*"
+    ],
+    [
+      42,
+      24,
+      0,
+      25,
+      0,
+      "*"
+    ],
+    [
+      43,
+      1,
+      7,
+      25,
+      1,
+      "*"
+    ],
+    [
+      44,
+      25,
+      0,
+      26,
+      0,
+      "*"
+    ],
+    [
+      45,
+      1,
+      12,
+      26,
+      1,
+      "*"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "frontendVersion": "Martini Shot inspection export",
+    "workflowRendererVersion": "LG",
+    "martiniShotInspection": {
+      "sourceTemplate": "05-render-next-clip.json",
+      "warning": "INSPECTION ONLY. Martini Shot fills {{placeholders}} and project objects at runtime. Do not queue this canvas workflow as-is."
+    }
+  },
+  "version": 0.4
+}

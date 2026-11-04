@@ -1,0 +1,312 @@
+{
+  "id": "martini-shot-inspect-02-plan-story.json",
+  "revision": 0,
+  "last_node_id": 5,
+  "last_link_id": 4,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "MartiniShotOpenProject",
+      "title": "open — MartiniShotOpenProject",
+      "pos": [
+        0,
+        0
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "project_name",
+          "type": "STRING",
+          "widget": {
+            "name": "project_name"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            1
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MartiniShotOpenProject",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        "{{project_name}}"
+      ]
+    },
+    {
+      "id": 2,
+      "type": "MiniMaxH3PromptLLMLoader",
+      "title": "llm — MiniMaxH3PromptLLMLoader",
+      "pos": [
+        0,
+        180
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "STRING",
+          "widget": {
+            "name": "model"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            2
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MiniMaxH3PromptLLMLoader",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        "{{director_llm}}"
+      ]
+    },
+    {
+      "id": 3,
+      "type": "MartiniShotPlanStory",
+      "title": "plan — MartiniShotPlanStory",
+      "pos": [
+        0,
+        360
+      ],
+      "size": [
+        320,
+        266
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "project",
+          "type": "*",
+          "link": 1
+        },
+        {
+          "name": "llm",
+          "type": "*",
+          "link": 2
+        },
+        {
+          "name": "creative_brief",
+          "type": "STRING",
+          "widget": {
+            "name": "creative_brief"
+          },
+          "link": null
+        },
+        {
+          "name": "story_brief",
+          "type": "STRING",
+          "widget": {
+            "name": "story_brief"
+          },
+          "link": null
+        },
+        {
+          "name": "story_wheel",
+          "type": "STRING",
+          "widget": {
+            "name": "story_wheel"
+          },
+          "link": null
+        },
+        {
+          "name": "min_locations",
+          "type": "STRING",
+          "widget": {
+            "name": "min_locations"
+          },
+          "link": null
+        },
+        {
+          "name": "request_performer_location_images",
+          "type": "STRING",
+          "widget": {
+            "name": "request_performer_location_images"
+          },
+          "link": null
+        },
+        {
+          "name": "seed",
+          "type": "STRING",
+          "widget": {
+            "name": "seed"
+          },
+          "link": null
+        },
+        {
+          "name": "reset_plan_cache",
+          "type": "STRING",
+          "widget": {
+            "name": "reset_plan_cache"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 1",
+          "type": "*",
+          "slot_index": 1,
+          "links": [
+            3
+          ]
+        },
+        {
+          "name": "output 2",
+          "type": "*",
+          "slot_index": 2,
+          "links": [
+            4
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MartiniShotPlanStory",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        "{{creative_brief}}",
+        "{{story_brief}}",
+        "{{story_wheel}}",
+        "{{min_locations}}",
+        "{{request_location_images}}",
+        "{{seed}}",
+        "{{reset_plan_cache}}"
+      ]
+    },
+    {
+      "id": 4,
+      "type": "PreviewAny",
+      "title": "report — PreviewAny",
+      "pos": [
+        0,
+        540
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 3
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewAny",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 5,
+      "type": "PreviewAny",
+      "title": "needs_location_images — PreviewAny",
+      "pos": [
+        0,
+        720
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 4
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewAny",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": []
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      3,
+      0,
+      "*"
+    ],
+    [
+      2,
+      2,
+      0,
+      3,
+      1,
+      "*"
+    ],
+    [
+      3,
+      3,
+      1,
+      4,
+      0,
+      "*"
+    ],
+    [
+      4,
+      3,
+      2,
+      5,
+      0,
+      "*"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "frontendVersion": "Martini Shot inspection export",
+    "workflowRendererVersion": "LG",
+    "martiniShotInspection": {
+      "sourceTemplate": "02-plan-story.json",
+      "warning": "INSPECTION ONLY. Martini Shot fills {{placeholders}} and project objects at runtime. Do not queue this canvas workflow as-is."
+    }
+  },
+  "version": 0.4
+}

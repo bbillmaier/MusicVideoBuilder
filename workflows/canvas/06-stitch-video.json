@@ -1,0 +1,290 @@
+{
+  "id": "martini-shot-inspect-06-stitch-video.json",
+  "revision": 0,
+  "last_node_id": 6,
+  "last_link_id": 4,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "MartiniShotOpenProject",
+      "title": "open — MartiniShotOpenProject",
+      "pos": [
+        0,
+        0
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "project_name",
+          "type": "STRING",
+          "widget": {
+            "name": "project_name"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            1
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MartiniShotOpenProject",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        "{{project_name}}"
+      ]
+    },
+    {
+      "id": 2,
+      "type": "MartiniShotProjectStatus",
+      "title": "status — MartiniShotProjectStatus",
+      "pos": [
+        0,
+        180
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "project",
+          "type": "*",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            2
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MartiniShotProjectStatus",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 3,
+      "type": "PreviewAny",
+      "title": "status_json — PreviewAny",
+      "pos": [
+        0,
+        360
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 2
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewAny",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 4,
+      "type": "MartiniShotFinalizeVideo",
+      "title": "finalize — MartiniShotFinalizeVideo",
+      "pos": [
+        0,
+        540
+      ],
+      "size": [
+        320,
+        122
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "render_package",
+          "type": "STRING",
+          "widget": {
+            "name": "render_package"
+          },
+          "link": null
+        },
+        {
+          "name": "output_name",
+          "type": "STRING",
+          "widget": {
+            "name": "output_name"
+          },
+          "link": null
+        },
+        {
+          "name": "overwrite",
+          "type": "STRING",
+          "widget": {
+            "name": "overwrite"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            3
+          ]
+        },
+        {
+          "name": "output 1",
+          "type": "*",
+          "slot_index": 1,
+          "links": [
+            4
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MartiniShotFinalizeVideo",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        "\"{{render_package}}\"",
+        "final",
+        false
+      ]
+    },
+    {
+      "id": 5,
+      "type": "PreviewAny",
+      "title": "video_path — PreviewAny",
+      "pos": [
+        0,
+        720
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 3
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewAny",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 6,
+      "type": "PreviewAny",
+      "title": "stitch_report — PreviewAny",
+      "pos": [
+        360,
+        0
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 4
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewAny",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": []
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      2,
+      0,
+      "*"
+    ],
+    [
+      2,
+      2,
+      0,
+      3,
+      0,
+      "*"
+    ],
+    [
+      3,
+      4,
+      0,
+      5,
+      0,
+      "*"
+    ],
+    [
+      4,
+      4,
+      1,
+      6,
+      0,
+      "*"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "frontendVersion": "Martini Shot inspection export",
+    "workflowRendererVersion": "LG",
+    "martiniShotInspection": {
+      "sourceTemplate": "06-stitch-video.json",
+      "warning": "INSPECTION ONLY. Martini Shot fills {{placeholders}} and project objects at runtime. Do not queue this canvas workflow as-is."
+    }
+  },
+  "version": 0.4
+}

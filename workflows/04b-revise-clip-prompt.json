@@ -1,0 +1,36 @@
+{
+  "name": "04b-revise-clip-prompt.json",
+  "stage": "revise_clip_prompt",
+  "description": "Retries the local LLM or applies a user-edited creative direction to exactly one existing prompt-package clip. It never replans the story or changes other prompts.",
+  "prompt": {
+    "llm": {
+      "class_type": "MiniMaxH3PromptLLMLoader",
+      "inputs": { "model": "{{director_llm}}" }
+    },
+    "revise": {
+      "class_type": "MartiniShotReviseClipPrompt",
+      "inputs": {
+        "folder": "{{package_folder}}",
+        "llm": ["llm", 0],
+        "clip_index": "{{clip_index}}",
+        "mode": "{{revision_mode}}",
+        "creative_text": "{{creative_text}}",
+        "temperature": 0.8,
+        "max_tokens": 1200,
+        "seed": "{{seed}}"
+      }
+    },
+    "revised_prompt": {
+      "class_type": "PreviewAny",
+      "inputs": { "source": ["revise", 0] }
+    },
+    "creative_text": {
+      "class_type": "PreviewAny",
+      "inputs": { "source": ["revise", 1] }
+    },
+    "revision_report": {
+      "class_type": "PreviewAny",
+      "inputs": { "source": ["revise", 2] }
+    }
+  }
+}

@@ -1,0 +1,174 @@
+{
+  "id": "martini-shot-inspect-01-create-project.json",
+  "revision": 0,
+  "last_node_id": 3,
+  "last_link_id": 2,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "LoadAudio",
+      "title": "song — LoadAudio",
+      "pos": [
+        0,
+        0
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "audio",
+          "type": "STRING",
+          "widget": {
+            "name": "audio"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            1
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadAudio",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        "{{song_file}}"
+      ]
+    },
+    {
+      "id": 2,
+      "type": "MartiniShotProject",
+      "title": "project — MartiniShotProject",
+      "pos": [
+        0,
+        180
+      ],
+      "size": [
+        320,
+        146
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "audio",
+          "type": "*",
+          "link": 1
+        },
+        {
+          "name": "refs",
+          "type": "STRING",
+          "widget": {
+            "name": "refs"
+          },
+          "link": null
+        },
+        {
+          "name": "project_name",
+          "type": "STRING",
+          "widget": {
+            "name": "project_name"
+          },
+          "link": null
+        },
+        {
+          "name": "replace_assets",
+          "type": "STRING",
+          "widget": {
+            "name": "replace_assets"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 1",
+          "type": "*",
+          "slot_index": 1,
+          "links": [
+            2
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MartiniShotProject",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        "{{project_name}}",
+        true
+      ]
+    },
+    {
+      "id": 3,
+      "type": "PreviewAny",
+      "title": "report — PreviewAny",
+      "pos": [
+        0,
+        360
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 2
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewAny",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": []
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      2,
+      0,
+      "*"
+    ],
+    [
+      2,
+      2,
+      1,
+      3,
+      0,
+      "*"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "frontendVersion": "Martini Shot inspection export",
+    "workflowRendererVersion": "LG",
+    "martiniShotInspection": {
+      "sourceTemplate": "01-create-project.json",
+      "warning": "INSPECTION ONLY. Martini Shot fills {{placeholders}} and project objects at runtime. Do not queue this canvas workflow as-is."
+    }
+  },
+  "version": 0.4
+}

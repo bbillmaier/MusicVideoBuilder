@@ -1,0 +1,821 @@
+{
+  "id": "martini-shot-inspect-04-write-prompt-package.json",
+  "revision": 0,
+  "last_node_id": 11,
+  "last_link_id": 12,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "MartiniShotOpenProject",
+      "title": "open — MartiniShotOpenProject",
+      "pos": [
+        0,
+        0
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "project_name",
+          "type": "STRING",
+          "widget": {
+            "name": "project_name"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            1,
+            2,
+            5
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MartiniShotOpenProject",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        "{{project_name}}"
+      ]
+    },
+    {
+      "id": 2,
+      "type": "MartiniShotLoadStoryPlan",
+      "title": "story — MartiniShotLoadStoryPlan",
+      "pos": [
+        0,
+        180
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "project",
+          "type": "*",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            3
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MartiniShotLoadStoryPlan",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 3,
+      "type": "MartiniShotResolveLocations",
+      "title": "resolve — MartiniShotResolveLocations",
+      "pos": [
+        0,
+        360
+      ],
+      "size": [
+        320,
+        98
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "project",
+          "type": "*",
+          "link": 2
+        },
+        {
+          "name": "story_plan",
+          "type": "*",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            4
+          ]
+        },
+        {
+          "name": "output 1",
+          "type": "*",
+          "slot_index": 1,
+          "links": [
+            8
+          ]
+        },
+        {
+          "name": "output 2",
+          "type": "*",
+          "slot_index": 2,
+          "links": [
+            9
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MartiniShotResolveLocations",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 4,
+      "type": "MartiniShotBuildProductionPlan",
+      "title": "production — MartiniShotBuildProductionPlan",
+      "pos": [
+        0,
+        540
+      ],
+      "size": [
+        320,
+        434
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "resolved_plan",
+          "type": "*",
+          "link": 4
+        },
+        {
+          "name": "dance_style",
+          "type": "STRING",
+          "widget": {
+            "name": "dance_style"
+          },
+          "link": null
+        },
+        {
+          "name": "target_shot_seconds",
+          "type": "STRING",
+          "widget": {
+            "name": "target_shot_seconds"
+          },
+          "link": null
+        },
+        {
+          "name": "min_shot_seconds",
+          "type": "STRING",
+          "widget": {
+            "name": "min_shot_seconds"
+          },
+          "link": null
+        },
+        {
+          "name": "cut_rate_vs_energy",
+          "type": "STRING",
+          "widget": {
+            "name": "cut_rate_vs_energy"
+          },
+          "link": null
+        },
+        {
+          "name": "broll_amount",
+          "type": "STRING",
+          "widget": {
+            "name": "broll_amount"
+          },
+          "link": null
+        },
+        {
+          "name": "performance_vs_dance",
+          "type": "STRING",
+          "widget": {
+            "name": "performance_vs_dance"
+          },
+          "link": null
+        },
+        {
+          "name": "freeform_amount",
+          "type": "STRING",
+          "widget": {
+            "name": "freeform_amount"
+          },
+          "link": null
+        },
+        {
+          "name": "location_variety",
+          "type": "STRING",
+          "widget": {
+            "name": "location_variety"
+          },
+          "link": null
+        },
+        {
+          "name": "chorus_consistency",
+          "type": "STRING",
+          "widget": {
+            "name": "chorus_consistency"
+          },
+          "link": null
+        },
+        {
+          "name": "outfit_change_rate",
+          "type": "STRING",
+          "widget": {
+            "name": "outfit_change_rate"
+          },
+          "link": null
+        },
+        {
+          "name": "continue_bias",
+          "type": "STRING",
+          "widget": {
+            "name": "continue_bias"
+          },
+          "link": null
+        },
+        {
+          "name": "lip_sync",
+          "type": "STRING",
+          "widget": {
+            "name": "lip_sync"
+          },
+          "link": null
+        },
+        {
+          "name": "max_shot_seconds",
+          "type": "STRING",
+          "widget": {
+            "name": "max_shot_seconds"
+          },
+          "link": null
+        },
+        {
+          "name": "hard_cuts_change_location",
+          "type": "STRING",
+          "widget": {
+            "name": "hard_cuts_change_location"
+          },
+          "link": null
+        },
+        {
+          "name": "seed",
+          "type": "STRING",
+          "widget": {
+            "name": "seed"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            6
+          ]
+        },
+        {
+          "name": "output 2",
+          "type": "*",
+          "slot_index": 2,
+          "links": [
+            10
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MartiniShotBuildProductionPlan",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        "{{dance_style}}",
+        "{{target_shot_seconds}}",
+        "{{min_shot_seconds}}",
+        "{{cut_rate_vs_energy}}",
+        "{{broll_amount}}",
+        "{{performance_vs_dance}}",
+        "{{freeform_amount}}",
+        "{{location_variety}}",
+        "{{chorus_consistency}}",
+        "{{outfit_change_rate}}",
+        "{{continue_bias}}",
+        "{{lip_sync}}",
+        "{{max_shot_seconds}}",
+        "{{hard_cuts_change_location}}",
+        "{{seed}}"
+      ]
+    },
+    {
+      "id": 5,
+      "type": "MiniMaxH3PromptLLMLoader",
+      "title": "llm — MiniMaxH3PromptLLMLoader",
+      "pos": [
+        0,
+        720
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "STRING",
+          "widget": {
+            "name": "model"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 0",
+          "type": "*",
+          "slot_index": 0,
+          "links": [
+            7
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MiniMaxH3PromptLLMLoader",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        "{{director_llm}}"
+      ]
+    },
+    {
+      "id": 6,
+      "type": "MartiniShotWritePromptPackage",
+      "title": "package — MartiniShotWritePromptPackage",
+      "pos": [
+        360,
+        0
+      ],
+      "size": [
+        320,
+        482
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "project",
+          "type": "*",
+          "link": 5
+        },
+        {
+          "name": "production_plan",
+          "type": "*",
+          "link": 6
+        },
+        {
+          "name": "llm",
+          "type": "*",
+          "link": 7
+        },
+        {
+          "name": "render_name",
+          "type": "STRING",
+          "widget": {
+            "name": "render_name"
+          },
+          "link": null
+        },
+        {
+          "name": "subject_description",
+          "type": "STRING",
+          "widget": {
+            "name": "subject_description"
+          },
+          "link": null
+        },
+        {
+          "name": "pronoun",
+          "type": "STRING",
+          "widget": {
+            "name": "pronoun"
+          },
+          "link": null
+        },
+        {
+          "name": "audio_usage",
+          "type": "STRING",
+          "widget": {
+            "name": "audio_usage"
+          },
+          "link": null
+        },
+        {
+          "name": "style_bible",
+          "type": "STRING",
+          "widget": {
+            "name": "style_bible"
+          },
+          "link": null
+        },
+        {
+          "name": "camera_pass",
+          "type": "STRING",
+          "widget": {
+            "name": "camera_pass"
+          },
+          "link": null
+        },
+        {
+          "name": "section_motifs",
+          "type": "STRING",
+          "widget": {
+            "name": "section_motifs"
+          },
+          "link": null
+        },
+        {
+          "name": "lip_sync",
+          "type": "STRING",
+          "widget": {
+            "name": "lip_sync"
+          },
+          "link": null
+        },
+        {
+          "name": "recurring_style_motif_weight",
+          "type": "STRING",
+          "widget": {
+            "name": "recurring_style_motif_weight"
+          },
+          "link": null
+        },
+        {
+          "name": "validate_actions",
+          "type": "STRING",
+          "widget": {
+            "name": "validate_actions"
+          },
+          "link": null
+        },
+        {
+          "name": "temperature",
+          "type": "STRING",
+          "widget": {
+            "name": "temperature"
+          },
+          "link": null
+        },
+        {
+          "name": "max_tokens",
+          "type": "STRING",
+          "widget": {
+            "name": "max_tokens"
+          },
+          "link": null
+        },
+        {
+          "name": "max_clip_frames",
+          "type": "STRING",
+          "widget": {
+            "name": "max_clip_frames"
+          },
+          "link": null
+        },
+        {
+          "name": "continuation_overlap",
+          "type": "STRING",
+          "widget": {
+            "name": "continuation_overlap"
+          },
+          "link": null
+        },
+        {
+          "name": "seed",
+          "type": "STRING",
+          "widget": {
+            "name": "seed"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output 2",
+          "type": "*",
+          "slot_index": 2,
+          "links": [
+            11
+          ]
+        },
+        {
+          "name": "output 3",
+          "type": "*",
+          "slot_index": 3,
+          "links": [
+            12
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MartiniShotWritePromptPackage",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": [
+        "{{render_name}}",
+        "the performer",
+        "she / her",
+        "fully_copy",
+        true,
+        true,
+        true,
+        "{{lip_sync}}",
+        "{{motif_weight}}",
+        true,
+        0.8,
+        1200,
+        260,
+        22,
+        "{{seed}}"
+      ]
+    },
+    {
+      "id": 7,
+      "type": "PreviewAny",
+      "title": "resolve_report — PreviewAny",
+      "pos": [
+        360,
+        180
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 8
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewAny",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 8,
+      "type": "PreviewAny",
+      "title": "ready_to_produce — PreviewAny",
+      "pos": [
+        360,
+        360
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 9
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewAny",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 9,
+      "type": "PreviewAny",
+      "title": "production_report — PreviewAny",
+      "pos": [
+        360,
+        540
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 10
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewAny",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 10,
+      "type": "PreviewAny",
+      "title": "package_report — PreviewAny",
+      "pos": [
+        360,
+        720
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 11
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewAny",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 11,
+      "type": "PreviewAny",
+      "title": "package_folder — PreviewAny",
+      "pos": [
+        720,
+        0
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 12
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewAny",
+        "Martini Shot inspection": true
+      },
+      "widgets_values": []
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      2,
+      0,
+      "*"
+    ],
+    [
+      2,
+      1,
+      0,
+      3,
+      0,
+      "*"
+    ],
+    [
+      3,
+      2,
+      0,
+      3,
+      1,
+      "*"
+    ],
+    [
+      4,
+      3,
+      0,
+      4,
+      0,
+      "*"
+    ],
+    [
+      5,
+      1,
+      0,
+      6,
+      0,
+      "*"
+    ],
+    [
+      6,
+      4,
+      0,
+      6,
+      1,
+      "*"
+    ],
+    [
+      7,
+      5,
+      0,
+      6,
+      2,
+      "*"
+    ],
+    [
+      8,
+      3,
+      1,
+      7,
+      0,
+      "*"
+    ],
+    [
+      9,
+      3,
+      2,
+      8,
+      0,
+      "*"
+    ],
+    [
+      10,
+      4,
+      2,
+      9,
+      0,
+      "*"
+    ],
+    [
+      11,
+      6,
+      2,
+      10,
+      0,
+      "*"
+    ],
+    [
+      12,
+      6,
+      3,
+      11,
+      0,
+      "*"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "frontendVersion": "Martini Shot inspection export",
+    "workflowRendererVersion": "LG",
+    "martiniShotInspection": {
+      "sourceTemplate": "04-write-prompt-package.json",
+      "warning": "INSPECTION ONLY. Martini Shot fills {{placeholders}} and project objects at runtime. Do not queue this canvas workflow as-is."
+    }
+  },
+  "version": 0.4
+}

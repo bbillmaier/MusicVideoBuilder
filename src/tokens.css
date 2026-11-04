@@ -1,0 +1,116 @@
+/* Martini Shot design tokens. Every color, size, and timing in the app's CSS should come from here. */
+:root {
+  color-scheme: dark;
+
+  /* Surfaces: charcoal with a faint blue cast, lightest = most raised. */
+  --bg-app: #0d0e13;
+  --bg-chrome: #0a0b0f;
+  --surface-1: #14151c;
+  --surface-2: #191a22;
+  --surface-3: #21222c;
+  --surface-4: #2a2b37;
+  --surface-inset: #0f1015;
+  --border-subtle: #22232d;
+  --border: #2d2f3b;
+  --border-strong: #424452;
+
+  /* Text. --text-faint is for secondary metadata only, never for essential content. */
+  --text: #eceef4;
+  --text-2: #c6c9d4;
+  --text-muted: #9a9eae;
+  --text-faint: #828698;
+  --text-on-accent: #1d0a16;
+
+  /* Accents: electric blue for information and progress, pink for the primary action and director requests. */
+  --blue: #55acf6;
+  --blue-strong: #3591e2;
+  --blue-soft: rgba(85, 172, 246, 0.12);
+  --blue-border: rgba(85, 172, 246, 0.42);
+  --pink: #f06db6;
+  --pink-hover: #f585c3;
+  --pink-strong: #df579f;
+  --pink-soft: rgba(240, 109, 182, 0.12);
+  --pink-border: rgba(240, 109, 182, 0.45);
+  --violet: #9b8af8;
+  --violet-soft: rgba(155, 138, 248, 0.12);
+  --violet-border: rgba(155, 138, 248, 0.42);
+
+  /* Semantic states. */
+  --ok: #62d39c;
+  --ok-soft: rgba(98, 211, 156, 0.11);
+  --ok-border: rgba(98, 211, 156, 0.38);
+  --warn: #f2bf62;
+  --warn-soft: rgba(242, 191, 98, 0.11);
+  --warn-border: rgba(242, 191, 98, 0.4);
+  --error: #f5847a;
+  --error-soft: rgba(245, 132, 122, 0.11);
+  --error-border: rgba(245, 132, 122, 0.42);
+  --danger-fill: #c2443d;
+  --danger-fill-hover: #d24f47;
+  --working: var(--blue);
+  --queued: var(--violet);
+
+  /* Story Wheel phases, blue through pink. */
+  --phase-1: #2f7fcf;
+  --phase-2: #4064d6;
+  --phase-3: #6b56d6;
+  --phase-4: #9c4fbf;
+  --phase-5: #d9549b;
+
+  /* Type. Fonts are bundled locally (see main.tsx). */
+  --font-sans: "Inter Variable", "Inter", "Segoe UI", system-ui, sans-serif;
+  --font-display: "Space Grotesk", "Inter Variable", "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", "Cascadia Mono", Consolas, ui-monospace, monospace;
+  --text-xs: 11.5px;
+  --text-sm: 12.5px;
+  --text-base: 13.5px;
+  --text-md: 15px;
+  --text-lg: 17px;
+  --text-xl: 20px;
+  --text-2xl: 26px;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+  --leading-tight: 1.25;
+  --leading: 1.5;
+
+  /* Spacing (4px grid). */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Radii. */
+  --radius-sm: 5px;
+  --radius: 7px;
+  --radius-lg: 10px;
+  --radius-pill: 999px;
+
+  /* Elevation. */
+  --shadow-1: inset 0 1px 0 rgba(255, 255, 255, 0.025), 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-2: 0 10px 28px rgba(0, 0, 0, 0.42);
+  --shadow-3: 0 24px 64px rgba(0, 0, 0, 0.6);
+
+  /* Focus: a two-ring outline that reads on every surface and accent. */
+  --focus-color: #8fcaff;
+  --focus-ring: 0 0 0 2px var(--bg-app), 0 0 0 4px var(--focus-color);
+
+  /* Motion. */
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --dur-fast: 120ms;
+  --dur: 180ms;
+  --dur-slow: 320ms;
+
+  /* Layout. */
+  --titlebar-h: 40px;
+  --sidebar-w: 212px;
+  --window-controls-w: 150px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --dur-fast: 0ms; --dur: 0ms; --dur-slow: 0ms; }
+}

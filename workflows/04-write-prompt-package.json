@@ -1,0 +1,90 @@
+{
+  "name": "04-write-prompt-package.json",
+  "stage": "prompt_package",
+  "description": "Re-checks locations, builds the deterministic production plan from the saved story plan, and writes the MiniMax prompt package (one prompt per clip). Used by Write prompt package on Produce. Never runs the story planner.",
+  "prompt": {
+    "open": {
+      "class_type": "MartiniShotOpenProject",
+      "inputs": { "project_name": "{{project_name}}" }
+    },
+    "story": {
+      "class_type": "MartiniShotLoadStoryPlan",
+      "inputs": { "project": ["open", 0] }
+    },
+    "resolve": {
+      "class_type": "MartiniShotResolveLocations",
+      "inputs": {
+        "project": ["open", 0],
+        "story_plan": ["story", 0]
+      }
+    },
+    "production": {
+      "class_type": "MartiniShotBuildProductionPlan",
+      "inputs": {
+        "resolved_plan": ["resolve", 0],
+        "dance_style": "{{dance_style}}",
+        "target_shot_seconds": "{{target_shot_seconds}}",
+        "min_shot_seconds": "{{min_shot_seconds}}",
+        "cut_rate_vs_energy": "{{cut_rate_vs_energy}}",
+        "broll_amount": "{{broll_amount}}",
+        "performance_vs_dance": "{{performance_vs_dance}}",
+        "freeform_amount": "{{freeform_amount}}",
+        "location_variety": "{{location_variety}}",
+        "chorus_consistency": "{{chorus_consistency}}",
+        "outfit_change_rate": "{{outfit_change_rate}}",
+        "continue_bias": "{{continue_bias}}",
+        "lip_sync": "{{lip_sync}}",
+        "max_shot_seconds": "{{max_shot_seconds}}",
+        "hard_cuts_change_location": "{{hard_cuts_change_location}}",
+        "seed": "{{seed}}"
+      }
+    },
+    "llm": {
+      "class_type": "MiniMaxH3PromptLLMLoader",
+      "inputs": { "model": "{{director_llm}}" }
+    },
+    "package": {
+      "class_type": "MartiniShotWritePromptPackage",
+      "inputs": {
+        "project": ["open", 0],
+        "production_plan": ["production", 0],
+        "llm": ["llm", 0],
+        "render_name": "{{render_name}}",
+        "subject_description": "the performer",
+        "pronoun": "she / her",
+        "audio_usage": "fully_copy",
+        "style_bible": true,
+        "camera_pass": true,
+        "section_motifs": true,
+        "lip_sync": "{{lip_sync}}",
+        "recurring_style_motif_weight": "{{motif_weight}}",
+        "validate_actions": true,
+        "temperature": 0.8,
+        "max_tokens": 1200,
+        "max_clip_frames": 260,
+        "continuation_overlap": 22,
+        "seed": "{{seed}}"
+      }
+    },
+    "resolve_report": {
+      "class_type": "PreviewAny",
+      "inputs": { "source": ["resolve", 1] }
+    },
+    "ready_to_produce": {
+      "class_type": "PreviewAny",
+      "inputs": { "source": ["resolve", 2] }
+    },
+    "production_report": {
+      "class_type": "PreviewAny",
+      "inputs": { "source": ["production", 2] }
+    },
+    "package_report": {
+      "class_type": "PreviewAny",
+      "inputs": { "source": ["package", 2] }
+    },
+    "package_folder": {
+      "class_type": "PreviewAny",
+      "inputs": { "source": ["package", 3] }
+    }
+  }
+}
