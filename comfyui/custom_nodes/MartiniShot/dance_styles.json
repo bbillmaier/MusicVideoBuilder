@@ -1,0 +1,52 @@
+{
+  "Commercial Hip-Hop": {
+    "feel": "confident, polished, and charismatic, like a professional dancer in a music video",
+    "signature_moves": ["sharp footwork", "grounded bounce", "shoulder pops", "chest hits", "arm swings", "body rolls", "quick turns", "brief freezes"],
+    "dynamics": "alternates smooth groove-based movement with explosive accents on the strong beats"
+  },
+  "Old-School Hip-Hop": {
+    "feel": "playful, loose, and full of swagger",
+    "signature_moves": ["running man", "Roger Rabbit", "kick-ball-change", "wop", "Biz Markie step", "head nods", "side-to-side bounce"],
+    "dynamics": "steady, bouncy groove that stays relaxed and fun, with occasional exaggerated hits"
+  },
+  "K-Pop": {
+    "feel": "precise, bright, and camera-aware, with crisp synchronized-style choreography",
+    "signature_moves": ["sharp arm formations", "hip sways", "point moves", "quick level changes", "hair flips", "stepping slides", "clean poses on accents"],
+    "dynamics": "tight, exact movements that snap cleanly into poses on musical accents, with expressive facial engagement"
+  },
+  "Jazz-Funk": {
+    "feel": "fierce, sensual, and theatrical",
+    "signature_moves": ["hip isolations", "sharp head snaps", "hair whips", "slow body waves", "strong walks", "chest isolations", "dramatic poses"],
+    "dynamics": "contrasts slow, controlled sensual movement with sudden sharp hits"
+  },
+  "R&B Groove": {
+    "feel": "smooth, relaxed, and effortlessly cool",
+    "signature_moves": ["two-step", "body waves", "slow hip rolls", "shoulder rolls", "subtle bounce", "smooth slides", "laid-back arm gestures"],
+    "dynamics": "continuous, fluid groove with soft accents and minimal sharp hits"
+  },
+  "House": {
+    "feel": "joyful, light, and energetic, driven by the four-on-the-floor pulse",
+    "signature_moves": ["jacking torso pulse", "loose-leg shuffles", "heel-toe footwork", "skates", "quick spins", "lofting floor touches"],
+    "dynamics": "constant rhythmic pulse through the torso with fast, light footwork that builds in complexity"
+  },
+  "Breaking": {
+    "feel": "athletic, competitive, and bold",
+    "signature_moves": ["toprock", "go-downs", "six-step footwork", "coffee grinders", "chair freezes", "baby freezes", "power transitions"],
+    "dynamics": "standing toprock builds into floor work and ends sections on sharp freezes"
+  },
+  "Afrobeats": {
+    "feel": "joyful, grounded, and rhythmic, with relaxed confidence",
+    "signature_moves": ["azonto arm gestures", "shoki shoulder bounce", "legwork footwork", "hip whines", "zanku steps", "grounded knee bends"],
+    "dynamics": "loose, grounded rhythm with polyrhythmic hip and shoulder accents"
+  },
+  "Contemporary": {
+    "feel": "emotional, expressive, and flowing",
+    "signature_moves": ["sweeping arm extensions", "spirals", "floor releases", "suspended balances", "contractions", "fluid turns", "reaching gestures"],
+    "dynamics": "flowing, breath-driven movement with suspended moments and controlled releases"
+  },
+  "Latin / Reggaeton": {
+    "feel": "sensual, rhythmic, and celebratory",
+    "signature_moves": ["perreo hip movement", "dembow bounce", "Cuban motion", "body waves", "quick hip accents", "playful turns"],
+    "dynamics": "steady dembow rhythm in the hips with sharp accents and playful variation"
+  }
+}

@@ -1,0 +1,2 @@
+# Shell scripts run on Linux (RunPod); keep LF endings even when committed from Windows.
+*.sh text eol=lf
