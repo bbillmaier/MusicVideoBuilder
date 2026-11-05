@@ -150,6 +150,9 @@ function DirectionEditor({ project, comfy, onNavigate }: { project: ProjectDetai
               <option value="1:1">1:1 — square</option><option value="21:9">21:9 — ultrawide</option><option value="9:21">9:21 — tall</option>
             </select></label>
             <label className="field"><span>Video size <em>(megapixels)</em></span><input className="input num" type="number" min={0.01} step={0.01} value={draft.renderMegapixels} onChange={(event) => { const renderMegapixels = Number(event.target.value); if (Number.isFinite(renderMegapixels) && renderMegapixels > 0) change({ renderMegapixels }); }} /></label>
+            <label className="field"><span>Steps <em>(per clip)</em></span><input className="input num" type="number" min={1} max={100} step={1} value={draft.renderSteps}
+              title="Sampler steps for each clip. The render model is tuned for 8; more steps take longer. Applies to the next clip that renders."
+              onChange={(event) => { const renderSteps = Number(event.target.value); if (Number.isInteger(renderSteps) && renderSteps >= 1 && renderSteps <= 100) change({ renderSteps }); }} /></label>
           </div>
           <p className="muted small">1 MP is the default single-pass render size. Martini Shot calculates exact dimensions divisible by 32 for the chosen ratio.</p>
           <label className="field"><span>Dance style</span><select className="select" value={chosenDanceStyle ? draft.danceStyle : "custom"}

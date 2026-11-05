@@ -13,6 +13,9 @@ export const MAX_MIN_LOCATIONS = 12;
 /** Plan Story's seed input range. */
 export const MAX_SEED = 0xffffffff;
 export const RENDER_ASPECT_RATIOS = ["16:9", "9:16", "4:3", "3:4", "1:1", "21:9", "9:21"] as const;
+/** The render graph's distilled UNET was tuned for 8 steps; more is slower and not always better. */
+export const DEFAULT_RENDER_STEPS = 8;
+export const MAX_RENDER_STEPS = 100;
 
 export const DEFAULT_DIRECTION: CreativeDirection = {
   creativeBrief: "", storyWheel: true, minLocations: 0, requestLocationImages: true, motifWeight: 0,
@@ -20,7 +23,7 @@ export const DEFAULT_DIRECTION: CreativeDirection = {
   cutRateVsEnergy: 0.5, brollAmount: 0.3, performanceVsDance: 0.4, freeformAmount: 0,
   locationVariety: 0.5, chorusConsistency: true, outfitChangeRate: 0.3, continueBias: 0.5,
   hardCutsChangeLocation: true, lipSync: false,
-  aspectRatio: "4:3", renderMegapixels: 1,
+  aspectRatio: "4:3", renderMegapixels: 1, renderSteps: DEFAULT_RENDER_STEPS,
 };
 
 /** Validates direction input from the renderer. Throws a readable error for anything malformed. */
@@ -55,6 +58,9 @@ export function validateDirection(raw: unknown): CreativeDirection {
   if (typeof controls.danceStyle !== "string" || !controls.danceStyle.trim() || controls.danceStyle.length > 80) throw new Error("Dance style must be a short label.");
   if (!RENDER_ASPECT_RATIOS.includes(controls.aspectRatio as typeof RENDER_ASPECT_RATIOS[number])) throw new Error("Choose a supported video aspect ratio.");
   if (typeof controls.renderMegapixels !== "number" || !Number.isFinite(controls.renderMegapixels) || controls.renderMegapixels <= 0) throw new Error("Video size must be greater than 0 megapixels.");
+  if (typeof controls.renderSteps !== "number" || !Number.isInteger(controls.renderSteps) || controls.renderSteps < 1 || controls.renderSteps > MAX_RENDER_STEPS) {
+    throw new Error(`Steps must be a whole number from 1 to ${MAX_RENDER_STEPS}.`);
+  }
   for (const key of ["chorusConsistency", "hardCutsChangeLocation", "lipSync"] as const) if (typeof controls[key] !== "boolean") throw new Error(`${key} must be on or off.`);
   const targetShotSeconds = shotSeconds("targetShotSeconds", 2, 30);
   const minShotSeconds = shotSeconds("minShotSeconds", 1, 15);
@@ -68,7 +74,7 @@ export function validateDirection(raw: unknown): CreativeDirection {
     freeformAmount: dial("freeformAmount"), locationVariety: dial("locationVariety"), chorusConsistency: controls.chorusConsistency,
     outfitChangeRate: dial("outfitChangeRate"), continueBias: dial("continueBias"), hardCutsChangeLocation: controls.hardCutsChangeLocation,
     lipSync: controls.lipSync,
-    aspectRatio: controls.aspectRatio, renderMegapixels: Math.round(controls.renderMegapixels * 100) / 100,
+    aspectRatio: controls.aspectRatio, renderMegapixels: Math.round(controls.renderMegapixels * 100) / 100, renderSteps: controls.renderSteps,
   };
 }
 

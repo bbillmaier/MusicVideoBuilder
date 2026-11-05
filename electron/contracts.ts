@@ -83,6 +83,8 @@ export type CreativeDirection = {
   /** Render dimensions are calculated locally from these project-level values. */
   aspectRatio: string;
   renderMegapixels: number;
+  /** Sampler steps per clip. Unlike size, it is read at render time, so it can change between clips of one package. */
+  renderSteps: number;
 };
 
 export type DirectionRecord = CreativeDirection & {

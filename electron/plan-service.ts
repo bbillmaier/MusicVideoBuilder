@@ -7,7 +7,7 @@ import type { DirectionRecord, PlanCacheResult, PlanData, PlanOverview, PlanRun,
 import { comfyStatus, nodeInputOptions, runWorkflowTemplate, serializeComfyWork, type WorkflowProgress } from "./comfy-client";
 import { db, getMachineSettings } from "./db";
 import {
-  DEFAULT_DIRECTION, MAX_SEED, assetFingerprint, cacheEvidence, cachedNodes, chooseDirectorLlm, parseStoryPlan, planFreshness, planInputs,
+  DEFAULT_DIRECTION, DEFAULT_RENDER_STEPS, MAX_SEED, assetFingerprint, cacheEvidence, cachedNodes, chooseDirectorLlm, parseStoryPlan, planFreshness, planInputs,
   planWorkflowValues, previewText, storySignature, validateDirection, type PlanInputs, type RawStoryPlan,
 } from "./plan-rules";
 import { productionBusy } from "./production-lock";
@@ -63,9 +63,15 @@ function toDirection(row: DirectionRow): DirectionRecord {
     performanceVsDance: saved.performanceVsDance ?? 0.4, freeformAmount: saved.freeformAmount ?? 0, locationVariety: saved.locationVariety ?? 0.5,
     chorusConsistency: saved.chorusConsistency ?? true, outfitChangeRate: saved.outfitChangeRate ?? 0.3, continueBias: saved.continueBias ?? 0.5,
     hardCutsChangeLocation: saved.hardCutsChangeLocation ?? true, lipSync: saved.lipSync ?? false,
-    aspectRatio: saved.aspectRatio ?? "4:3", renderMegapixels: saved.renderMegapixels ?? 1,
+    aspectRatio: saved.aspectRatio ?? "4:3", renderMegapixels: saved.renderMegapixels ?? 1, renderSteps: saved.renderSteps ?? DEFAULT_RENDER_STEPS,
     planSeed: row.plan_seed, updatedAt: row.updated_at,
   };
+}
+
+/** The project's current sampler steps. Read at render time (not from the prompt package), so a change applies to the next
+ *  clip without rewriting prompts. */
+export function renderSteps(projectId: string): number {
+  return toDirection(directionRow(projectId)).renderSteps;
 }
 
 export function saveDirection(projectId: unknown, raw: unknown): Promise<PlanOverview> {
@@ -77,7 +83,7 @@ export function saveDirection(projectId: unknown, raw: unknown): Promise<PlanOve
     performanceVsDance: direction.performanceVsDance, freeformAmount: direction.freeformAmount, locationVariety: direction.locationVariety,
     chorusConsistency: direction.chorusConsistency, outfitChangeRate: direction.outfitChangeRate, continueBias: direction.continueBias,
     hardCutsChangeLocation: direction.hardCutsChangeLocation, lipSync: direction.lipSync,
-    aspectRatio: direction.aspectRatio, renderMegapixels: direction.renderMegapixels };
+    aspectRatio: direction.aspectRatio, renderMegapixels: direction.renderMegapixels, renderSteps: direction.renderSteps };
   db().prepare(`UPDATE project_direction SET creative_brief = ?, story_wheel = ?, min_locations = ?, request_location_images = ?, motif_weight = ?, production_settings = ?, updated_at = ?
     WHERE project_id = ?`).run(direction.creativeBrief, direction.storyWheel ? 1 : 0, direction.minLocations, direction.requestLocationImages ? 1 : 0,
     direction.motifWeight, JSON.stringify(productionSettings), now(), project.id);

@@ -23,7 +23,7 @@ import { db, getMachineSettings } from "./db";
 import { locationsOverview } from "./location-service";
 import { storyFileHash } from "./location-rules";
 import { previewText, storySignature, parseStoryPlan, reportBlock, type RawStoryPlan } from "./plan-rules";
-import { directorLlmOptions, planOverview } from "./plan-service";
+import { directorLlmOptions, planOverview, renderSteps } from "./plan-service";
 import { claimProduction, productionBusy } from "./production-lock";
 import {
   FIXED_INDEX, MAX_NOISE_SEED, NEXT_MISSING, RENDER_NAME, actionValidation, clipMetadata, estimateRemaining, findVideo, parseLoaderReport,
@@ -284,7 +284,9 @@ export async function produceOverview(projectId: unknown): Promise<ProduceOvervi
   if (editableSourceMissing) {
     packageNotes.push("This older prompt package predates per-clip Prompt Workshop sources. Write a new prompt package to enable one-clip retries and edits.");
   }
-  if (pkg && settings?.direction && JSON.stringify(settings.direction) !== JSON.stringify(plans.direction)) {
+  // Steps are read at render time, so changing them never makes the package's settings out of date.
+  const promptSettings = (direction: CreativeDirection) => JSON.stringify({ ...direction, renderSteps: undefined });
+  if (pkg && settings?.direction && promptSettings(settings.direction) !== promptSettings(plans.direction)) {
     packageNotes.push("Shot mix, pacing, lip-sync, or prompt settings changed on Direction. This package keeps its saved settings; write a new prompt package to apply the new values.");
   }
   if (pkg && settings) {
@@ -848,6 +850,8 @@ async function renderClip(queueId: string, projectId: string, packageRunId: stri
     const values = {
       render_package: remotePackage, loader_mode: mode, clip_index: clip.clip_index, noise_seed: seed,
       aspect_ratio: direction?.aspectRatio ?? "4:3", render_megapixels: direction?.renderMegapixels ?? 1,
+      // steps come from the project's current Direction, not the package, so a change applies to the next clip
+      render_steps: renderSteps(projectId),
     };
     let outputs: unknown;
     let cleanup: CleanupEvidence | null = null;

@@ -100,7 +100,7 @@
     },
     "sigmas_1": {
       "class_type": "BasicScheduler",
-      "inputs": { "model": ["shift", 0], "scheduler": "simple", "steps": 8, "denoise": 1.0 }
+      "inputs": { "model": ["shift", 0], "scheduler": "simple", "steps": "{{render_steps}}", "denoise": 1.0 }
     },
     "guider_1": {
       "class_type": "BasicGuider",

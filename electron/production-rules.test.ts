@@ -178,7 +178,7 @@ test("workflow templates: placeholders fill, render package passes as a literal 
 
   const render = JSON.parse(fs.readFileSync(path.join(dir, "05-render-next-clip.json"), "utf-8"));
   const renderPackage = { project: "static-heart", folder: "E:\\out\\martini_shot\\static-heart\\render-01", render_name: "render-01" };
-  const graph = applyTemplateValues(render.prompt, { render_package: renderPackage, loader_mode: "Next missing", clip_index: 3, noise_seed: 42, aspect_ratio: "9:16", render_megapixels: 1.25, livePreviews: false, vramCleanup: false, ramCleanup: false }) as Record<string, { class_type: string; inputs: Record<string, unknown> }>;
+  const graph = applyTemplateValues(render.prompt, { render_package: renderPackage, loader_mode: "Next missing", clip_index: 3, noise_seed: 42, aspect_ratio: "9:16", render_megapixels: 1.25, render_steps: 12, livePreviews: false, vramCleanup: false, ramCleanup: false }) as Record<string, { class_type: string; inputs: Record<string, unknown> }>;
   assert.deepEqual(graph.clip.inputs.render_package, { __value__: renderPackage });
   assert.equal(graph.clip.inputs.mode, "Next missing");
   assert.equal(Object.values(graph).filter((node) => node.class_type === "MartiniShotLoadRenderClip").length, 1);
@@ -187,6 +187,7 @@ test("workflow templates: placeholders fill, render package passes as a literal 
   assert.equal(graph.resolution.inputs.aspect_ratio, "9:16");
   assert.equal(graph.live_preview.inputs.enabled, false);
   assert.equal(graph.resolution.inputs.megapixels, 1.25);
+  assert.equal(graph.sigmas_1.inputs.steps, 12);
   assert.equal(Object.values(graph).filter((node) => node.class_type === "MinimaxH3LatentUpscaler3D").length, 0);
   assert.equal(Object.values(graph).filter((node) => node.class_type === "SamplerCustomAdvanced").length, 1);
   assert.equal(Object.values(graph).filter((node) => node.class_type === "VRAMCleanup").length, 3);
