@@ -33,7 +33,7 @@ RunPod → **Templates → New Template**.
 
 | Field | Value |
 |---|---|
-| Container image | `runpod/pytorch:1.6.0-cu1281-torch291-ubuntu2404` (any RunPod PyTorch image with CUDA 12.8+ works; the script installs its own torch) |
+| Container image | `runpod/pytorch:1.6.0-cu1300-torch291-ubuntu2404` (CUDA 13.0 compiler; the script installs PyTorch 2.10.0/cu130 in its own environment) |
 | Container disk | 30 GB |
 | Volume mount path | `/workspace` |
 | Expose HTTP ports | `8188` (add `8888` too to keep Jupyter) |
@@ -45,7 +45,24 @@ RunPod → **Templates → New Template**.
 bash -c 'R=https://github.com/bbillmaier/MusicVideoBuilder.git; D=/workspace/martini-shot-src; [ -n "$GITHUB_TOKEN" ] && A="https://x-access-token:$GITHUB_TOKEN@${R#https://}" || A=$R; [ -d $D/.git ] || git clone --depth 1 "$A" $D; export MARTINISHOT_REPO=$R; exec bash $D/cloud/runpod/setup.sh'
 ```
 
-The start command only clones the repo the first time. `setup.sh` then pulls the latest version of the nodes on every start. Changes to `setup.sh` itself are picked up from the second start onward.
+The start command only clones the repo the first time. `setup.sh` then pulls the latest version of the nodes on every start. For an existing volume, refresh the source before launching an updated setup script; see the CUDA 13 migration below.
+
+### Migrating an existing CUDA 12.8 pod
+
+Stop running workflows first. Publish these setup changes to the branch used by the pod, then change the template/container image to `runpod/pytorch:1.6.0-cu1300-torch291-ubuntu2404` and reuse the existing network volume. The CUDA 13.0 compiler is needed to rebuild SageAttention; changing only the pip index leaves the old image's CUDA 12.8 compiler in place.
+
+Refresh `/workspace/martini-shot-src` to your intended published revision **before** executing its `cloud/runpod/setup.sh` (the start command above otherwise executes the copy already on disk). For the default public repo/branch, with ComfyUI stopped:
+
+```bash
+git -C /workspace/martini-shot-src fetch origin main
+git -C /workspace/martini-shot-src checkout --detach FETCH_HEAD
+export MARTINISHOT_REPO=https://github.com/bbillmaier/MusicVideoBuilder.git
+bash /workspace/martini-shot-src/cloud/runpod/setup.sh
+```
+
+Setup migrates the existing environment to Torch 2.10.0, torchvision 0.25.0 and torchaudio 2.10.0 with CUDA 13.0, removes the previous SageAttention installation, and builds the pinned SageAttention 2.2.0 source for the new stack. Models are retained. Allow time for this one-time rebuild. The selected host must support CUDA 13; setup runs a real GPU smoke test and stops if it fails.
+
+Verify the startup log reports `PyTorch 2.10.0+cu130`, `CUDA 13.0`, a passed GPU smoke test, and SageAttention 2.2.0. ComfyUI should no longer report that CUDA operations are disabled because it needs cu130.
 
 **Environment variables:** at least `MARTINISHOT_REF=main`. Add `GITHUB_TOKEN` if the repo is private: a fine-grained token with read-only *Contents* access to this repo. Store it as a RunPod secret (`{{ RUNPOD_SECRET_github_token }}`), not as plain text.
 Set `MARTINI_SHOT_TOKEN` to a long random value and store it as a RunPod secret too. It protects only Martini Shot's project-file API; ComfyUI's normal `/prompt` and `/view` endpoints remain unauthenticated.
@@ -134,9 +151,12 @@ The script checks every download against its known size, so a partial file is re
 | `GITHUB_TOKEN` | | read token for a private repo; removed from the stored git URL after cloning |
 | `COMFYUI_REF` | the tested commit | `master` for the latest ComfyUI |
 | `COMFYUI_ARGS` | | extra ComfyUI flags, e.g. `--reserve-vram 2` |
-| `TORCH_INDEX_URL` | PyTorch cu128 | wheel index used when the venv has no torch |
-| `SAGE_ATTENTION` | `1` | builds SageAttention 2 for the pod's GPU on the first start (about 10 min, cached in `/workspace/wheels`), falls back to SageAttention 1, and starts ComfyUI with `--use-sage-attention` only if it works. `0` turns it off |
-| `SAGE_REF` | `main` | SageAttention branch, tag, or commit to build |
+| `TORCH_INDEX_URL` | PyTorch cu130 | wheel index used to install or migrate the requested stack |
+| `TORCH_VERSION` / `TORCHVISION_VERSION` / `TORCHAUDIO_VERSION` | `2.10.0` / `0.25.0` / `2.10.0` | Exact versions, constrained during subsequent dependency installs |
+| `TORCH_CUDA_VERSION` | `13.0` | Required Torch CUDA runtime and SageAttention compiler version; change together with the index and container image |
+| `SAGE_ATTENTION` | `1` | builds SageAttention 2 for the pod's GPU (about 10 min, in the background while the models download; cached in `/workspace/wheels`, progress in `/workspace/logs/sageattention.log`), falls back to SageAttention 1, and starts ComfyUI with `--use-sage-attention` only if it works. `0` turns it off |
+| `JUPYTER_PASSWORD` | `MartiniPass` | Jupyter's password. The default is shared and public, and Jupyter gives a root terminal, so set your own (as a RunPod secret) for anything beyond a quick test |
+| `SAGE_REF` | `eb615cf6cf4d221338033340ee2de1c37fbdba4a` (v2.2.0) | SageAttention source revision to build |
 | `SKIP_MODELS` | `0` | `1` skips all model downloads |
 | `SKIP_START` | `0` | `1` sets everything up without starting ComfyUI |
 | `RUNPOD_SERVICES` | `1` | also runs the image's `/start.sh` (SSH, Jupyter) |

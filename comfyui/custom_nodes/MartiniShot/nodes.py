@@ -188,6 +188,11 @@ class MartiniShotLoadStoryPlan:
     FUNCTION = "load"
     CATEGORY = CATEGORY
 
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        # The app edits section actions in story_plan.json between runs; always read the file, never a cached copy.
+        return float("nan")
+
     def load(self, project):
         state = read_state(project, "story_plan.json")
         return (state,)

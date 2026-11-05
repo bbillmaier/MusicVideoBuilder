@@ -136,7 +136,7 @@ const PLAN: PlanData = {
   warnings: [], rulesOnly: false,
   sections: [1, 2, 3].map((number) => ({
     number, start: (number - 1) * 10, end: number * 10, role: "verse", label: "A", scene: "Performance", location: "", locationMode: "image_backed" as const,
-    beat: "beat", contrast: "", phase: "", starts: "", turn: "", ends: "", wheelPhase: number === 1 ? "Arrival" as const : number === 2 ? "Friction" as const : "Release" as const,
+    beat: "beat", plannerBeat: null, contrast: "", phase: "", starts: "", turn: "", ends: "", wheelPhase: number === 1 ? "Arrival" as const : number === 2 ? "Friction" as const : "Release" as const,
     wheelPlacement: "declared" as const,
   })),
 };

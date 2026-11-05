@@ -218,7 +218,7 @@ class MiniMaxH3AutoDirector:
                 "min_shot_seconds": ("FLOAT", {"default": 3.0, "min": 1.0, "max": 15.0, "step": 0.5}),
                 "cut_rate_vs_energy": dial(0.5, "How much shorter shots get in loud sections (0 = same everywhere)."),
                 "broll_amount": dial(0.3, "B-roll in intros/outros and as inserts."),
-                "performance_vs_dance": dial(0.4, "Share of verses (and some choruses) sung to camera instead of danced."),
+                "performance_vs_dance": dial(0.4, "Share of verse, bridge, and chorus shots sung to camera instead of danced (1 = all of them)."),
                 "freeform_amount": dial(0.0, "Share of verses where the performer explores the location (simple template)."),
                 "location_variety": dial(0.5, "Chance a new section gets a new location."),
                 "chorus_consistency": ("BOOLEAN", {"default": True, "tooltip": "Sections that sound alike share a location."}),

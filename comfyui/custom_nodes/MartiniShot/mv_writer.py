@@ -33,7 +33,7 @@ Rules:
 - Never describe faces, skin, hair color, or the colors, design, or materials of outfits, props, or places that come from reference images. You MAY describe how clothing, hair, and objects MOVE.
 - You MAY describe how the scene's own light falls on the performer: its color, direction, reflections, and shadows on skin, hair, and clothing.
 - Do not describe the music. Do not write dialogue or lyrics.
-- Develop one principal action with natural secondary motion. Repeated rhythmic gestures are allowed; do not invent unrelated stunts merely to keep moving. Body mechanics are realistic.
+- {movement_rule}
 - When a Director's notes block contains CONSTRAINT PRIORITY, treat MUST and ENTERING/EXITING STATE as hard requirements. MAY ADD IF COMPATIBLE is optional and MUST NOT is prohibited. Do not let optional style or hooks replace a MUST action.
 
 Follow the output format exactly."""
@@ -61,8 +61,32 @@ ROLES = {
 }
 
 
+# Dance clips are choreography: a sequence of specific, named moves. The other scene types keep one coherent action,
+# so a story beat plays as one believable moment instead of a string of unrelated stunts.
+MOVEMENT_RULES = {
+    "Dance": (
+        "Build the clip from a sequence of specific, named moves that flow into each other. For each move say which "
+        "side and limb, the direction, level, and timing, and include arms, hands, feet, hips, torso, head, and gaze. "
+        "Every move must suit the shot intention, the space, and the footwear; no unrelated stunts. Body mechanics are realistic."
+    ),
+}
+DEFAULT_MOVEMENT_RULE = (
+    "Develop one principal action with natural secondary motion. Repeated rhythmic gestures are allowed; do not invent "
+    "unrelated stunts merely to keep moving. Body mechanics are realistic."
+)
+
+
 def system_prompt(scene_type: str) -> str:
-    return ROLES[scene_type] + "\n\n" + _SHARED_RULES
+    return ROLES[scene_type] + "\n\n" + _SHARED_RULES.replace(
+        "{movement_rule}", MOVEMENT_RULES.get(scene_type, DEFAULT_MOVEMENT_RULE))
+
+
+def word_range(scene_type: str, seconds: float) -> tuple[int, int]:
+    """(minimum, maximum) action words for a clip. Dance needs room for specific moves in every phrase (the old Dance
+    Song Prompt writer asked for 180-380 words); other scene types only have a ceiling."""
+    if scene_type == "Dance":
+        return max(100, min(260, round(seconds * 20))), max(180, min(380, round(seconds * 40)))
+    return 0, max(60, min(220, round(seconds * 14)))
 
 
 def labels_text(refs: list[dict[str, Any]], subject_description: str, pronoun: str) -> str:
@@ -143,7 +167,12 @@ def build_clip_message(
             f"Dance style: {style_name}. Feel: {style_seed['feel']}. Optional move vocabulary (use only what fits the shot intention): "
             f"{', '.join(style_seed['signature_moves'])}. Dynamics: {style_seed['dynamics']}."
         )
-    if _clean(scene_description):
+    if _clean(scene_description) and scene_type == "Dance":
+        parts.append(f"Shot intention (what the choreography expresses): {_clean(scene_description)}. "
+                     "Choreograph a sequence of specific moves around it; it guides the moves and is not one move to repeat. "
+                     "Continue from the supplied state rather than restarting it on each clip. "
+                     "Style vocabulary and visual hooks must not replace it or introduce conflicting actions.")
+    elif _clean(scene_description):
         parts.append(f"Shot intention (primary action): {_clean(scene_description)}. "
                      "Preserve its purpose and essential interaction, allowing expressive variation. "
                      "Continue from the supplied state rather than restarting this action on each clip. "
@@ -187,12 +216,17 @@ def build_clip_message(
             + (f", local change {p['trend']}" if p.get("trend") else "")
             for p in analysis["phrases"]
         )
+        per_phrase = ("Write one paragraph per phrase. Each paragraph names new, specific moves that continue the same "
+                      "idea and flow from the previous phrase; do not just repeat the previous phrase's move."
+                      if scene_type == "Dance" else
+                      "Write one short paragraph per phrase developing the same principal action, not a new action for every phrase.")
         parts.append(
-            "Use this loudness timeline for phrasing, respecting any intentional contrast. Write one short paragraph "
-            "per phrase developing the same principal action, not a new action for every phrase. The first "
+            f"Use this loudness timeline for phrasing, respecting any intentional contrast. {per_phrase} The first "
             "paragraph has no timestamp. Every later paragraph MUST begin with its start time in exactly this form: "
             '"At 00:03.200, ".\n' + timeline
         )
+    elif scene_type == "Dance":
+        parts.append("Write two or three paragraphs of specific choreography, a sequence of named moves across the clip.")
     else:
         parts.append("Write one or two concise paragraphs developing the principal action over the clip.")
     if ask_signature:
@@ -231,10 +265,15 @@ def build_clip_message(
         )
     if ask_signature:
         headers.append("SIGNATURE_COMBO: <one or two sentences naming the chorus hook combo you used>")
-    word_budget = max(60, min(220, round(analysis['duration'] * 14)))
-    rule = (f"Aim for at most {word_budget} words of action for this {analysis['duration']:.2f}-second clip. "
-            "There is no minimum: use fewer words for a simple action. Keep one principal action with secondary "
-            "gestures and describe only transitions that have time to happen.")
+    least, most = word_range(scene_type, analysis["duration"])
+    if scene_type == "Dance":
+        rule = (f"Write between {least} and {most} words of choreography for this {analysis['duration']:.2f}-second clip. "
+                "Spend them on specific moves in every phrase, not on mood or the look of the place, and describe "
+                "only moves that have time to happen.")
+    else:
+        rule = (f"Aim for at most {most} words of action for this {analysis['duration']:.2f}-second clip. "
+                "There is no minimum: use fewer words for a simple action. Keep one principal action with secondary "
+                "gestures and describe only transitions that have time to happen.")
     if scene_type != "B-roll" and "<Subject 1>" in labels:
         rule = "The first sentence must name <Subject 1>. " + rule
     parts.append(rule + "\n\nOutput format (exactly these headers, in this order, nothing before or after):\n" + "\n".join(headers))

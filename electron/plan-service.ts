@@ -8,7 +8,7 @@ import { comfyStatus, nodeInputOptions, runWorkflowTemplate, serializeComfyWork,
 import { db, getMachineSettings } from "./db";
 import {
   DEFAULT_DIRECTION, DEFAULT_RENDER_STEPS, MAX_SEED, assetFingerprint, cacheEvidence, cachedNodes, chooseDirectorLlm, parseStoryPlan, planFreshness, planInputs,
-  planWorkflowValues, previewText, storySignature, validateDirection, type PlanInputs, type RawStoryPlan,
+  planWorkflowValues, previewText, storySignature, validateDirection, carrySectionEdits, setSectionAction, type PlanInputs, type RawStoryPlan,
 } from "./plan-rules";
 import { productionBusy } from "./production-lock";
 import { ensureComfyProjectSaved, getProject, projectAssetsForPlanning, projectIdentity, suppliedLocationNames } from "./project-service";
@@ -258,10 +258,14 @@ async function executePlan(runId: string, projectId: string, reroll: boolean, en
     try { raw = JSON.parse(await fs.readFile(planFile, "utf-8")) as RawStoryPlan; }
     catch (error) { throw new Error(`Could not read ${planFile}: ${error instanceof Error ? error.message : String(error)}`); }
     if (raw.project && raw.project !== project.slug) throw new Error(`${planFile} belongs to project "${String(raw.project)}", not "${project.slug}".`);
+    // A cache-reused plan comes back with the planner's actions; sections the planner did not change keep the user's edits.
+    const restored = carrySectionEdits(previousPlan, raw);
+    if (restored.length) await writePlanFiles(project.projectPath, raw);
     const plan = parseStoryPlan(raw, { projectPath: project.projectPath, suppliedLocations: suppliedLocationNames(projectId), report });
 
     const evidence = cacheEvidence(report);
-    const details = reusedByComfy ? [...evidence.details, "ComfyUI reused its in-memory result for Plan Story"] : evidence.details;
+    const details = [...evidence.details, ...(reusedByComfy ? ["ComfyUI reused its in-memory result for Plan Story"] : []),
+      ...(restored.length ? [`Kept your edited action for section${restored.length === 1 ? "" : "s"} ${restored.join(", ")}`] : [])];
     const resultSeed = plan.seed;
     if (resultSeed < 0 || resultSeed > MAX_SEED) throw new Error(`story_plan.json has an invalid seed (${resultSeed}).`);
     // After a reroll the planner chose a new seed: keep it, so the next unchanged Create director plan reuses this plan.
@@ -290,6 +294,39 @@ async function executePlan(runId: string, projectId: string, reroll: boolean, en
     activity.delete(runId);
     notify(projectId);
   }
+}
+
+// ----- Section actions -------------------------------------------------------------------------------------
+
+/** story_plan.json (and its director_context.json copy) in the same layout the Martini Shot nodes write. */
+async function writePlanFiles(projectPath: string, raw: RawStoryPlan): Promise<void> {
+  await fs.writeFile(path.join(projectPath, "story_plan.json"), JSON.stringify(raw, null, 2), "utf-8");
+  const contextFile = path.join(projectPath, "director_context.json");
+  if (raw.director_context && existsSync(contextFile)) await fs.writeFile(contextFile, JSON.stringify(raw.director_context, null, 2), "utf-8");
+}
+
+/** Sets one section's action in the current plan: story_plan.json, director_context.json, and the saved plan run, so the
+ *  next prompt package and the Plan page both use it. Callers re-take the clips that already use the section. */
+export async function writeSectionAction(projectId: string, section: number, action: string): Promise<{ previous: string; plan: PlanData }> {
+  const project = getProject(projectId);
+  const latest = runRows(project.id)[0];
+  if (latest && (latest.status === "queued" || latest.status === "running")) throw new Error("A director plan is being made. Wait for it to finish.");
+  const current = db().prepare("SELECT current_plan_run_id FROM martini_projects WHERE id = ?").get(project.id) as { current_plan_run_id: string | null };
+  const row = runRow(current.current_plan_run_id);
+  if (!row?.plan_json) throw new Error("There is no director plan yet. Create one on the Plan page.");
+  const planFile = path.join(project.projectPath, "story_plan.json");
+  let raw: RawStoryPlan;
+  try { raw = JSON.parse(await fs.readFile(planFile, "utf-8")) as RawStoryPlan; }
+  catch (error) { throw new Error(`Could not read ${planFile}: ${error instanceof Error ? error.message : String(error)}`); }
+  if (raw.project && raw.project !== project.slug) throw new Error(`${planFile} belongs to project "${String(raw.project)}", not "${project.slug}".`);
+  const previous = setSectionAction(raw, section, action);
+  const plan = parseStoryPlan(raw, { projectPath: project.projectPath, suppliedLocations: suppliedLocationNames(project.id), report: row.report ?? "" });
+  await writePlanFiles(project.projectPath, raw);
+  db().prepare("UPDATE director_runs SET plan_json = ? WHERE id = ?").run(JSON.stringify(plan), row.id);
+  db().prepare("INSERT INTO project_reports (id, project_id, category, body, run_id, created_at) VALUES (?, ?, 'story_plan', ?, ?, ?)")
+    .run(randomUUID(), project.id, `Section ${section} action edited: "${previous || "(none)"}" → "${plan.sections[section - 1].beat}".`, row.id, now());
+  notify(project.id);
+  return { previous, plan };
 }
 
 /** A specific plan run (e.g. the one a prompt package was written from), with its saved plan and the inputs it was made from. */

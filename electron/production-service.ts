@@ -5,12 +5,12 @@
 //  - Each queued clip runs workflows/05-render-next-clip.json once: one ComfyUI prompt renders exactly one clip, then
 //    runWorkflowTemplate sends POST /free and waits for ComfyUI to be idle before this loop considers the next clip.
 import { randomInt, randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { CLIP_CAMERAS } from "./contracts";
 import type {
-  ClipCamera, ClipChanges, ClipMode, ClipRefOption, ClipRefRole, ClipRevisionMode, ClipRevisionRequest, ClipShotSettings,
+  ClipCamera, ClipChanges, ClipMode, ClipRefOption, ClipRefRole, ClipRevisionMode, ClipRevisionRequest, ClipShotSettings, SectionActionImpact,
   ClipDetail, ClipStatus, CleanupState, DecisionRow, PackageRun, PackageRunStatus, PlanData, ProduceClip, ProduceEvent, ProduceOverview,
   PromptPackage, RenderAttempt, RenderQueueState, RerenderResult, TimelineSection, CreativeDirection, LivePreviewSession, LivePreviewFrame,
 } from "./contracts";
@@ -23,7 +23,7 @@ import { db, getMachineSettings } from "./db";
 import { locationsOverview } from "./location-service";
 import { storyFileHash } from "./location-rules";
 import { previewText, storySignature, parseStoryPlan, reportBlock, type RawStoryPlan } from "./plan-rules";
-import { directorLlmOptions, planOverview, renderSteps } from "./plan-service";
+import { directorLlmOptions, planOverview, renderSteps, writeSectionAction } from "./plan-service";
 import { claimProduction, productionBusy } from "./production-lock";
 import {
   FIXED_INDEX, MAX_NOISE_SEED, NEXT_MISSING, RENDER_NAME, actionValidation, clipMetadata, estimateRemaining, findVideo, parseLoaderReport,
@@ -288,6 +288,12 @@ export async function produceOverview(projectId: unknown): Promise<ProduceOvervi
   const editableSourceMissing = Boolean(pkg && !existsSync(path.join(pkg.folder, "clip_creatives.json")));
   if (editableSourceMissing) {
     packageNotes.push("This older prompt package predates per-clip Prompt Workshop sources. Write a new prompt package to enable one-clip retries and edits.");
+  }
+  // A section action edited after this package (without rewriting its clips) changes story_plan.json under it.
+  const storedPackage = parseJson<StoredPackage>(currentRow?.plan_json);
+  const storyFile = path.join(project.projectPath, "story_plan.json");
+  if (pkg && storedPackage?.storyHash && existsSync(storyFile) && storyFileHash(readFileSync(storyFile)) !== storedPackage.storyHash) {
+    packageNotes.push("The plan's section actions changed after this prompt package was written, and its clips were not rewritten. Write a new prompt package, or edit the section again on Produce to rewrite its clips.");
   }
   // Steps are read at render time, so changing them never makes the package's settings out of date.
   const promptSettings = (direction: CreativeDirection) => JSON.stringify({ ...direction, renderSteps: undefined });
@@ -1012,6 +1018,10 @@ export async function clipDetail(projectId: unknown, clipIndex: unknown): Promis
     creativeRevision: typeof creative?.revision === "number" ? creative.revision : null,
     shot: creative && creativeSource ? shotSettings(creative, refOptions(creativeSource, allRows)) : null,
     followers: chain.followers, continuesFrom: chain.continuesFrom, rerenderWith: chain.rerenderWith,
+    sectionAction: (() => {
+      const planned = row.section_number ? plans.plan?.sections.find((item) => item.number === row.section_number) : undefined;
+      return planned ? { section: planned.number, action: planned.beat, plannerAction: planned.plannerBeat ?? null } : null;
+    })(),
   };
 }
 
@@ -1258,6 +1268,120 @@ export async function reviseClipPrompt(projectId: unknown, clipIndex: unknown, r
       + (moved ? ` ${moved} earlier video file${moved === 1 ? " was" : "s were"} moved to ${archive}.` : ""),
     { clip: index, mode, changes, carried, dependentClips: changed.added, archive: moved ? archive : null, report });
     return produceOverview(project.id);
+  } finally {
+    release();
+    notify(project.id);
+  }
+}
+
+// ----- Section actions -------------------------------------------------------------------------------------
+
+/** The clips of a section that play its action: those the production plan drove from the story action, or, when the
+ *  section had no action before, its performer clips (a B-roll insert never takes the section action). */
+function sectionClips(rows: ClipRow[], section: number): ClipRow[] {
+  const inSection = rows.filter((row) => row.section_number === section).sort((a, b) => a.clip_index - b.clip_index);
+  const driven = inSection.filter((row) => parseJson<ClipMetaExtra>(row.meta)?.storyDriven);
+  return driven.length ? driven : inSection.filter((row) => row.scene !== "B-roll");
+}
+
+async function sectionImpact(projectId: string, section: number): Promise<SectionActionImpact & { rows: ClipRow[] }> {
+  const plans = await planOverview(projectId);
+  const planned = plans.plan?.sections.find((item) => item.number === section);
+  if (!plans.plan || !planned) throw new Error(`Section ${section} is not in the current director plan.`);
+  const base = { section, action: planned.beat, plannerAction: planned.plannerBeat ?? null };
+  const overview = await produceOverview(projectId);
+  const pkgRow = currentPackageRow(projectId);
+  if (!pkgRow || !overview.package) return { ...base, retake: [], rerender: [], note: "There is no prompt package yet, so only the plan changes.", rows: [] };
+  if (overview.packageStale.length) {
+    return { ...base, retake: [], rerender: [], rows: [], note: "The prompt package is out of date, so only the plan changes. The next prompt package uses the new action." };
+  }
+  const rows = await syncClipsWithDisk(pkgRow.id, overview.package.folder);
+  const creatives = await readCreatives(overview.package.folder);
+  const chosen = sectionClips(rows, section).filter((row) => creatives?.[String(row.clip_index)]);
+  const rerender = chosen.length
+    ? withContinuations(chosen.map((row) => row.clip_index), rows.map((row) => ({ index: row.clip_index, transition: row.transition ?? "", overlapFrames: row.overlap_frames }))).clips
+    : [];
+  return {
+    ...base, retake: chosen.map((row) => row.clip_index), rerender, rows: chosen,
+    note: chosen.length ? null : creatives ? `No clip in the prompt package plays section ${section}, so only the plan changes.`
+      : "This older prompt package has no editable clip sources, so only the plan changes. Write a new prompt package to use the new action.",
+  };
+}
+
+/** What changing a section's action would touch; the Plan and Produce pages show it before asking to confirm. */
+export async function sectionActionImpact(projectId: unknown, sectionNumber: unknown): Promise<SectionActionImpact> {
+  const project = projectIdentity(projectId);
+  if (typeof sectionNumber !== "number" || !Number.isInteger(sectionNumber) || sectionNumber < 1) throw new Error("Choose a song section.");
+  const { rows: _rows, ...impact } = await sectionImpact(project.id, sectionNumber);
+  return impact;
+}
+
+/** Changes one section's action everywhere it is used. The plan (story_plan.json) always changes. When the current prompt
+ *  package has clips for the section, each gets a new LLM take built around the action (in clip order, so continuations
+ *  follow), and they and the clips that reuse their frames are marked for re-render. `confirmed` must be true then. */
+export async function editSectionAction(projectId: unknown, sectionNumber: unknown, action: unknown, confirmed: unknown): Promise<ProduceOverview> {
+  const project = projectIdentity(projectId);
+  if (typeof sectionNumber !== "number" || !Number.isInteger(sectionNumber) || sectionNumber < 1) throw new Error("Choose a song section.");
+  if (typeof action !== "string" || !action.trim()) throw new Error("Enter an action for the section.");
+  const release = claimProduction("package", project.id);
+  try {
+    const impact = await sectionImpact(project.id, sectionNumber);
+    if (impact.retake.length && confirmed !== true) {
+      throw new Error(`Changing section ${sectionNumber}'s action rewrites clip${impact.retake.length === 1 ? "" : "s"} ${formatRanges(impact.retake)}. Confirm it first.`);
+    }
+    const pkgRow = currentPackageRow(project.id);
+    const settings = parseJson<PackageSettings>(pkgRow?.settings);
+    if (impact.retake.length) {
+      if (!settings?.directorLlm) throw new Error("This prompt package does not record its local director LLM. Write a fresh prompt package first.");
+      const comfy = await comfyStatus();
+      if (!comfy.connected) throw new Error(`ComfyUI is not reachable at ${comfy.endpoint}. Start ComfyUI and wait for it to finish loading; nothing was changed.`);
+    }
+    const { plan } = await writeSectionAction(project.id, sectionNumber, action);
+    const saved = plan.sections[sectionNumber - 1].beat;
+    if (!impact.retake.length || !pkgRow) {
+      addReport(project.id, "clip_prompt_revision", `Section ${sectionNumber} action set to "${saved}". ${impact.note ?? ""}`.trim(), { section: sectionNumber });
+      return await produceOverview(project.id);
+    }
+
+    const stored = parseJson<StoredPackage>(pkgRow.plan_json)!;
+    const packageFolder = await comfyFolder(project, stored.folder);
+    const done: number[] = [];
+    const reports: string[] = [];
+    try {
+      for (const row of impact.rows) {
+        const run = await serializeComfyWork(() => runWorkflowTemplate(development, "04b-revise-clip-prompt.json", {
+          package_folder: packageFolder, clip_index: row.clip_index, revision_mode: "Try another take", creative_text: "",
+          changes: JSON.stringify({ intention: saved }), seed: settings!.seed, director_llm: settings!.directorLlm,
+        }, project.id));
+        reports.push(previewText(run.outputs, "revision_report") ?? `Clip ${row.clip_index} rewritten.`);
+        update("render_clips", row.id, { action: saved, updated_at: now() });
+        done.push(row.clip_index);
+      }
+    } catch (error) {
+      const left = impact.retake.filter((index) => !done.includes(index));
+      if (done.length) {
+        const changed = withContinuations(done, clipRows(pkgRow.id).map((item) => ({ index: item.clip_index, transition: item.transition ?? "", overlapFrames: item.overlap_frames })));
+        await supersedeClips(project, stored.folder, clipRows(pkgRow.id), changed.clips, path.join(stored.folder, "superseded", `section-${sectionNumber}-${archiveStamp(now())}`));
+      }
+      throw new Error(`Section ${sectionNumber}'s action was saved${done.length ? ` and clip${done.length === 1 ? "" : "s"} ${formatRanges(done)} rewritten` : ""}, `
+        + `but clip ${left[0]} could not be rewritten: ${error instanceof Error ? error.message : String(error)} `
+        + `Edit the section again with the same action to finish clip${left.length === 1 ? "" : "s"} ${formatRanges(left)}.`);
+    }
+
+    // The package now matches the edited plan, so Produce does not report it as edited after the package.
+    const storyBytes = await fs.readFile(path.join(project.projectPath, "story_plan.json"));
+    update("director_runs", pkgRow.id, { plan_json: JSON.stringify({ ...stored, storyHash: storyFileHash(storyBytes) }) });
+    const rows = clipRows(pkgRow.id);
+    const changed = withContinuations(done, rows.map((item) => ({ index: item.clip_index, transition: item.transition ?? "", overlapFrames: item.overlap_frames })));
+    const archive = path.join(stored.folder, "superseded", `section-${sectionNumber}-${archiveStamp(now())}`);
+    const moved = await supersedeClips(project, stored.folder, rows, changed.clips, archive);
+    db().prepare("UPDATE martini_projects SET status = 'prompt_package_ready', updated_at = ? WHERE id = ?").run(now(), project.id);
+    addReport(project.id, "clip_prompt_revision", `Section ${sectionNumber} action set to "${saved}". The local LLM rewrote clip${done.length === 1 ? "" : "s"} ${formatRanges(done)} around it.\n`
+      + `${reports.join("\n")}\nClip${changed.clips.length === 1 ? "" : "s"} ${formatRanges(changed.clips)} now need rendering.`
+      + (changed.added.length ? ` ${formatRanges(changed.added)} added for motion continuity.` : "")
+      + (moved ? ` ${moved} earlier video file${moved === 1 ? " was" : "s were"} moved to ${archive}.` : ""),
+    { section: sectionNumber, clips: done, dependentClips: changed.added });
+    return await produceOverview(project.id);
   } finally {
     release();
     notify(project.id);

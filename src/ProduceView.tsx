@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatDuration, formatTime, formatWhen, readableError } from "./ProjectsView";
 import { elapsed, useTicker } from "./usePlan";
 import { Button, ConfirmDialog, CopyButton, Disclosure, Icon, LoadingPage, NoProject, Notice, PageHeader, PanelHead, Pill, ProgressBar, Switch, ToneMark, cx, type LucideIcon, type Tone } from "./ui";
+import { SectionActionEditor } from "./SectionActionEditor";
 import { CLIP_CAMERAS, type ClipChanges, type ClipMode, type ClipRefRole, type ClipRevisionRequest, type ClipShotSettings } from "../electron/contracts";
 
 type Props = { project: ProjectDetail | null; comfy?: ComfyStatus; onNavigate(view: "Projects" | "Plan" | "Locations" | "Results"): void };
@@ -250,8 +251,9 @@ function ProduceContent({ project, comfy, onNavigate }: { project: ProjectDetail
           </ConfirmDialog>;
         })()}
         <Decisions clip={shown} detail={detail} planEvidence={overview.planEvidence} />
-        {shown && <PromptWorkshop clip={shown} detail={detail} disabled={pending || active || !!otherBusy || comfyDown}
-          onRevise={revisePrompt} />}
+        {shown && <PromptWorkshop clip={shown} detail={detail} disabled={pending || active || !!otherBusy || comfyDown} projectId={project.id}
+          onRevise={revisePrompt} onError={setError}
+          onSectionSaved={(result) => { setOverview(result); setError(""); void window.martini.produce.clipDetail(project.id, shown.index).then(setDetail).catch(() => undefined); }} />}
       </div>
 
       <QueueTable overview={overview} active={active} onFocus={setFocus} />
@@ -453,8 +455,9 @@ function shotChanges(shot: ClipShotSettings, draft: ShotDraft): ClipChanges {
   return changes;
 }
 
-function PromptWorkshop({ clip, detail, disabled, onRevise }: {
-  clip: ProduceClip; detail?: ClipDetail; disabled: boolean; onRevise(request: ClipRevisionRequest): Promise<boolean>;
+function PromptWorkshop({ clip, detail, disabled, projectId, onRevise, onSectionSaved, onError }: {
+  clip: ProduceClip; detail?: ClipDetail; disabled: boolean; projectId: string; onRevise(request: ClipRevisionRequest): Promise<boolean>;
+  onSectionSaved(overview: ProduceOverview): void; onError(message: string): void;
 }) {
   const current = detail?.index === clip.index ? detail : undefined;
   const [text, setText] = useState("");
@@ -494,6 +497,13 @@ function PromptWorkshop({ clip, detail, disabled, onRevise }: {
 
   return <section className="panel prompt-workshop">
     <PanelHead icon={Icon.retry} title="Prompt workshop" aside={<span className="muted small">Revision {current.creativeRevision ?? 0}</span>} />
+
+    {current.sectionAction && <div className="section-row">
+      <h3 className="workshop-heading">Section {current.sectionAction.section} action</h3>
+      <p className="muted small">Shared by every clip in the section. Changing it rewrites their prompts with the local LLM and marks them for re-render.</p>
+      <SectionActionEditor projectId={projectId} section={current.sectionAction.section} action={current.sectionAction.action}
+        plannerAction={current.sectionAction.plannerAction} disabled={disabled} compact onSaved={onSectionSaved} onError={onError} />
+    </div>}
 
     {shot && draft && <div className="shot-settings">
       <h3 className="workshop-heading">Shot settings</h3>

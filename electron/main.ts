@@ -18,7 +18,7 @@ import {
 } from "./location-service";
 import { LOCATION_IMAGE_EXTENSIONS } from "./location-rules";
 import {
-  clipDetail, clipOutputPath, configureProductionService, currentPreviewSession, packageFolderFor, produceOverview, queueRemaining, queueRender, queueSpecificClip, rerenderClip, rerenderUnchanged, retryClip, reviseClipPrompt,
+  clipDetail, clipOutputPath, configureProductionService, currentPreviewSession, packageFolderFor, produceOverview, queueRemaining, queueRender, queueSpecificClip, rerenderClip, rerenderUnchanged, retryClip, reviseClipPrompt, editSectionAction, sectionActionImpact,
   startPromptPackage, stopAfterCurrent,
 } from "./production-service";
 import {
@@ -177,6 +177,10 @@ app.whenReady().then(() => {
     if (confirmed !== true) throw new Error("Reroll needs confirmation.");
     return startPlan(projectId, true);
   });
+  ipcMain.handle("martini:section-action-impact", (_event, projectId: unknown, section: unknown) => sectionActionImpact(projectId, section));
+  // Rewrites the clips that play the section when a prompt package exists; the renderer shows them and asks first.
+  ipcMain.handle("martini:section-action-edit", (_event, projectId: unknown, section: unknown, action: unknown, confirmed: unknown) =>
+    editSectionAction(projectId, section, action, confirmed));
   ipcMain.handle("martini:director-llm-options", () => directorLlmOptions());
   ipcMain.handle("martini:locations-overview", (_event, projectId: unknown) => locationsOverview(projectId));
   ipcMain.handle("martini:locations-check", (_event, projectId: unknown) => startLocationCheck(projectId));

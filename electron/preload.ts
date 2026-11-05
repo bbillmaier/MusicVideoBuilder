@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type {
-  AssetChangeResult, AssetRole, ClipDetail, ClipRevisionRequest, CreativeDirection, LocationPlaceResult, LocationsOverview, PlanOverview, ProduceOverview, ProjectDetail,
+  AssetChangeResult, AssetRole, ClipDetail, ClipRevisionRequest, CreativeDirection, SectionActionImpact, LocationPlaceResult, LocationsOverview, PlanOverview, ProduceOverview, ProjectDetail,
   ProjectsOverview, RerenderRequest, RerenderResult, ResultsOverview, LivePreviewSession, LivePreviewFrame,
 } from "./contracts";
 import type { MachineSettings } from "./db";
@@ -44,6 +44,11 @@ contextBridge.exposeInMainWorld("martini", {
     create: (projectId: string): Promise<PlanOverview> => ipcRenderer.invoke("martini:plan-create", projectId),
     /** Starts a deliberate reroll (reset_plan_cache). `confirmed` must be true. */
     reroll: (projectId: string, confirmed: true): Promise<PlanOverview> => ipcRenderer.invoke("martini:plan-reroll", projectId, confirmed),
+    /** Which clips changing a section's action would rewrite and re-render. */
+    sectionImpact: (projectId: string, section: number): Promise<SectionActionImpact> => ipcRenderer.invoke("martini:section-action-impact", projectId, section),
+    /** Sets a section's action in the plan and, when a prompt package exists, retakes and re-renders its clips. */
+    editSectionAction: (projectId: string, section: number, action: string, confirmed: boolean): Promise<ProduceOverview> =>
+      ipcRenderer.invoke("martini:section-action-edit", projectId, section, action, confirmed),
     onChanged: (listener: (projectId: string) => void): (() => void) => {
       const handler = (_event: Electron.IpcRendererEvent, projectId: string) => listener(projectId);
       ipcRenderer.on("martini:plan-changed", handler);

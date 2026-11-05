@@ -219,10 +219,50 @@ export type RawStoryPlan = {
   creative_direction?: unknown;
   settings?: { story_wheel?: unknown; min_locations?: unknown; request_performer_location_images?: unknown; seed?: unknown };
   requested_locations?: unknown;
+  director_context?: unknown;
 };
 
 const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
 const num = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+
+export const MAX_SECTION_ACTION_LENGTH = 600;
+
+/** Sets one section's action in a story_plan.json value (in place) and returns the action it replaced.
+ *  The planner's original is kept as `beat_planner`, and dropped again when the user types it back. The director
+ *  context's "must change" for the section follows the beat when it was derived from it (sections with no turn). */
+export function setSectionAction(raw: RawStoryPlan & { director_context?: unknown }, section: number, action: string): string {
+  const clean = action.replace(/\s+/g, " ").trim();
+  if (!clean) throw new Error("Enter an action for the section.");
+  if (clean.length > MAX_SECTION_ACTION_LENGTH) throw new Error(`A section action can be at most ${MAX_SECTION_ACTION_LENGTH} characters.`);
+  const sections = Array.isArray(raw.analysis?.sections) ? raw.analysis!.sections as unknown[] : [];
+  if (!Number.isInteger(section) || section < 1 || section > sections.length) throw new Error(`Section ${section} is not in this plan.`);
+  if (!raw.story || typeof raw.story !== "object") raw.story = {};
+  const story = raw.story as Record<string, RawBeat>;
+  const beat = story[String(section)] ?? (story[String(section)] = {});
+  const previous = text(beat.beat);
+  const planner = typeof beat.beat_planner === "string" ? beat.beat_planner : previous;
+  beat.beat = clean;
+  if (clean === planner) delete beat.beat_planner; else beat.beat_planner = planner;
+  const context = raw.director_context as { section_states?: Record<string, { must_change?: unknown }> } | undefined;
+  const state = context?.section_states?.[String(section)];
+  if (state && !text(beat.turn)) state.must_change = clean;
+  return previous;
+}
+
+/** After a re-plan: sections whose planner action is unchanged keep the user's edit from the previous plan.
+ *  Returns the section numbers it restored. */
+export function carrySectionEdits(previous: PlanData | null, raw: RawStoryPlan & { director_context?: unknown }): number[] {
+  const story = (raw.story && typeof raw.story === "object" ? raw.story : {}) as Record<string, RawBeat>;
+  const restored: number[] = [];
+  for (const section of previous?.sections ?? []) {
+    if (section.plannerBeat == null) continue; // not edited (plans saved before edits existed have no field)
+    const beat = story[String(section.number)];
+    if (!beat || text(beat.beat) !== section.plannerBeat.trim()) continue; // the planner wrote something new: theirs wins
+    setSectionAction(raw, section.number, section.beat);
+    restored.push(section.number);
+  }
+  return restored;
+}
 
 const PHASE_WORDS: [StoryPhase, RegExp][] = [
   ["Release", /releas|resol|cathar|payoff|pay-off|aftermath|denouement|finale|ending|outro|afterglow|reconcil|epilogue/],
@@ -289,7 +329,7 @@ export function parseStoryPlan(raw: RawStoryPlan, options: { projectPath: string
     const phase = text(beat.phase);
     return {
       number, start, end, role: text(section.role), label: text(section.label), scene, location, locationMode,
-      beat: text(beat.beat), contrast: text(beat.contrast), phase, starts: text(beat.starts), turn: text(beat.turn), ends: text(beat.ends),
+      beat: text(beat.beat), plannerBeat: typeof beat.beat_planner === "string" ? beat.beat_planner : null, contrast: text(beat.contrast), phase, starts: text(beat.starts), turn: text(beat.turn), ends: text(beat.ends),
       wheelPhase: null, wheelPlacement: null,
     };
   });

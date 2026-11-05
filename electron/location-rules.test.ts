@@ -130,7 +130,7 @@ test("resolver report lines are parsed per requested name", () => {
 });
 
 function section(number: number, location: string, scene: string, mode: PlanSection["locationMode"], beat = ""): PlanSection {
-  return { number, start: number * 10, end: number * 10 + 10, role: "verse", label: "A", scene, location, locationMode: mode, beat, contrast: "", phase: "",
+  return { number, start: number * 10, end: number * 10 + 10, role: "verse", label: "A", scene, location, locationMode: mode, beat, plannerBeat: null, contrast: "", phase: "",
     starts: "", turn: "", ends: "", wheelPhase: null, wheelPlacement: null };
 }
 

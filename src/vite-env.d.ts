@@ -12,7 +12,7 @@ import type {
   TimelineSection as SharedTimelineSection, ProduceEvent as SharedProduceEvent,
   ResultsOverview as SharedResultsOverview, FinalVideo as SharedFinalVideo, DirectorReport as SharedDirectorReport, ReportSection as SharedReportSection,
   RerenderRequest as SharedRerenderRequest, RerenderResult as SharedRerenderResult, FinalState as SharedFinalState,
-  ClipRevisionRequest as SharedClipRevisionRequest, LivePreviewFrame as SharedLivePreviewFrame,
+  ClipRevisionRequest as SharedClipRevisionRequest, LivePreviewFrame as SharedLivePreviewFrame, SectionActionImpact as SharedSectionActionImpact,
 } from "../electron/contracts";
 
 declare global {
@@ -103,6 +103,8 @@ declare global {
         saveDirection(projectId: string, direction: CreativeDirection): Promise<PlanOverview>;
         create(projectId: string): Promise<PlanOverview>;
         reroll(projectId: string, confirmed: true): Promise<PlanOverview>;
+        sectionImpact(projectId: string, section: number): Promise<SharedSectionActionImpact>;
+        editSectionAction(projectId: string, section: number, action: string, confirmed: boolean): Promise<ProduceOverview>;
         onChanged(listener: (projectId: string) => void): () => void;
       };
       locations: {

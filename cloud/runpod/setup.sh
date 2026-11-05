@@ -23,7 +23,11 @@ COMFYUI_REPO="${COMFYUI_REPO:-https://github.com/comfyanonymous/ComfyUI.git}"
 COMFYUI_REF="${COMFYUI_REF:-fd7639f477050e5c25b68fc38a9c2a6b6d988211}"
 COMFYUI_PORT="${COMFYUI_PORT:-8188}"
 COMFYUI_ARGS="${COMFYUI_ARGS:-}"
-TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}"
+TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu130}"
+TORCH_VERSION="${TORCH_VERSION:-2.10.0}"
+TORCHVISION_VERSION="${TORCHVISION_VERSION:-0.25.0}"
+TORCHAUDIO_VERSION="${TORCHAUDIO_VERSION:-2.10.0}"
+TORCH_CUDA_VERSION="${TORCH_CUDA_VERSION:-13.0}"
 
 # Where the MartiniShot nodes come from: this app's repo, folder comfyui/custom_nodes/MartiniShot.
 MARTINISHOT_REPO="${MARTINISHOT_REPO:-}"          # e.g. https://github.com/<you>/martini-shot.git
@@ -45,7 +49,7 @@ HF_TOKEN="${HF_TOKEN:-}"
 # SageAttention: faster attention for the video model (the local dev PC runs ComfyUI with it).
 SAGE_ATTENTION="${SAGE_ATTENTION:-1}"             # 1 = install it and start ComfyUI with --use-sage-attention
 SAGE_REPO="${SAGE_REPO:-https://github.com/thu-ml/SageAttention.git}"
-SAGE_REF="${SAGE_REF:-main}"
+SAGE_REF="${SAGE_REF:-eb615cf6cf4d221338033340ee2de1c37fbdba4a}" # v2.2.0
 WHEEL_DIR="${WHEEL_DIR:-$WORKSPACE/wheels}"       # built wheels are kept here, per torch version and GPU
 
 SKIP_MODELS="${SKIP_MODELS:-0}"
@@ -164,8 +168,16 @@ if command -v apt-get >/dev/null && [[ "$(id -u)" == 0 ]]; then
 fi
 command -v git >/dev/null || die "git is required"
 command -v python3 >/dev/null || die "python3 is required"
+if [[ "$SAGE_ATTENTION" == 1 ]]; then
+  nvcc_check="$(command -v nvcc || ls /usr/local/cuda/bin/nvcc 2>/dev/null || true)"
+  [[ -n "$nvcc_check" ]] && "$nvcc_check" --version | grep -q "release ${TORCH_CUDA_VERSION}," \
+    || die "Use a CUDA $TORCH_CUDA_VERSION development image for SageAttention (default: runpod/pytorch:1.6.0-cu1300-torch291-ubuntu2404), or set SAGE_ATTENTION=0"
+fi
 
 if [[ "$RUNPOD_SERVICES" == 1 && -x /start.sh ]]; then
+  # The image's start script skips JupyterLab without a password. MartiniPass is a shared default: anyone with this
+  # pod's Jupyter URL can log in with it, so set JUPYTER_PASSWORD (ideally as a RunPod secret) to use your own.
+  export JUPYTER_PASSWORD="${JUPYTER_PASSWORD:-MartiniPass}"
   log "Starting the image's RunPod services (SSH/Jupyter) in the background"
   nohup /start.sh >"$LOG_DIR/runpod-start.log" 2>&1 &
 fi
@@ -188,10 +200,27 @@ if [[ ! -x "$VENV_DIR/bin/python" ]]; then
 fi
 PY="$VENV_DIR/bin/python"
 "$PY" -m pip install --quiet --upgrade pip wheel
-if ! "$PY" -c "import torch" 2>/dev/null; then
-  log "Installing PyTorch from $TORCH_INDEX_URL"
-  "$PY" -m pip install --quiet torch torchvision torchaudio --index-url "$TORCH_INDEX_URL"
+# Apply the requested stack to existing volumes too, not just empty environments.
+torch_matches() {
+  "$PY" - "$TORCH_VERSION" "$TORCHVISION_VERSION" "$TORCHAUDIO_VERSION" "$TORCH_CUDA_VERSION" <<'PYCODE'
+import sys
+import torch, torchvision, torchaudio
+actual = [m.__version__.split('+')[0] for m in (torch, torchvision, torchaudio)]
+sys.exit(0 if actual == sys.argv[1:4] and torch.version.cuda == sys.argv[4] else 1)
+PYCODE
+}
+if ! torch_matches >/dev/null 2>&1; then
+  log "Installing PyTorch $TORCH_VERSION / CUDA $TORCH_CUDA_VERSION from $TORCH_INDEX_URL"
+  "$PY" -m pip install --quiet --upgrade "torch==$TORCH_VERSION" "torchvision==$TORCHVISION_VERSION" \
+    "torchaudio==$TORCHAUDIO_VERSION" --index-url "$TORCH_INDEX_URL"
+  torch_matches || die "Installed PyTorch stack does not match the requested versions"
+  # Compiled extensions from the previous Torch/CUDA stack must be rebuilt.
+  "$PY" -m pip uninstall -y sageattention
 fi
+# Prevent later node requirements from silently replacing the selected stack.
+printf 'torch==%s\ntorchvision==%s\ntorchaudio==%s\n' \
+  "$TORCH_VERSION" "$TORCHVISION_VERSION" "$TORCHAUDIO_VERSION" >"$VENV_DIR/torch-constraints.txt"
+export PIP_CONSTRAINT="$VENV_DIR/torch-constraints.txt"
 log "Installing ComfyUI requirements"
 "$PY" -m pip install --quiet -r "$COMFY_DIR/requirements.txt"
 
@@ -223,11 +252,26 @@ for req in "$NODES/MartiniShot/requirements.txt" "$NODES/comfyui_memory_cleanup/
   if [[ -f "$req" ]]; then "$PY" -m pip install --quiet -r "$req"; fi
 done
 
-# ---------------------------------------------------------------- 3b. SageAttention
-# SageAttention 2 is built from source for this GPU the first time (about 10 minutes) and the wheel is cached on the
-# volume. Without a CUDA compiler, or if the build fails, SageAttention 1 (Triton kernels, no compiler) is used instead.
-# ComfyUI only gets --use-sage-attention when a real attention call on the GPU works, so a bad build can't stop it starting.
+# Check the real GPU runtime before spending time building extensions or downloading models.
+torch_matches || die "A dependency changed the requested PyTorch stack"
+"$PY" - <<'PYCODE'
+import torch
+print(f"Runtime: PyTorch {torch.__version__}, CUDA {torch.version.cuda}")
+assert torch.cuda.is_available(), "CUDA is unavailable; use a host driver compatible with the selected CUDA runtime"
+x = torch.ones(16, device='cuda')
+assert (x + x).sum().item() == 32
+torch.cuda.synchronize()
+print(f"GPU smoke test passed: {torch.cuda.get_device_name(0)}")
+PYCODE
+
+# ---------------------------------------------------------------- 3b. SageAttention (in the background)
+# SageAttention 2 is built from source for this GPU the first time (about 10 minutes) and the wheel is cached in
+# $WHEEL_DIR. Without a CUDA compiler, or if the build fails, SageAttention 1 (Triton kernels, no compiler) is used instead.
+# It runs in the background while the models download (it needs CPU, they need the network); setup waits for it before
+# starting ComfyUI, which only gets --use-sage-attention when a real attention call on the GPU works.
 SAGE_FLAG=""
+SAGE_PID=""
+SAGE_LOG="$LOG_DIR/sageattention.log"
 sage_works() {
   "$PY" - >/dev/null 2>&1 <<'PYCODE'
 import torch
@@ -239,50 +283,58 @@ PYCODE
 }
 sage_version() { "$PY" -c 'import importlib.metadata as m; print(m.version("sageattention"))' 2>/dev/null || echo "?"; }
 
-if [[ "$SAGE_ATTENTION" == 1 ]]; then
-  log "SageAttention"
+install_sage() {
   if sage_works; then
     echo "  sageattention $(sage_version) is installed and works"
+    return 0
+  fi
+  local cap torch_tag python_tag cache wheel nvcc_bin
+  cap="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d ' ' || true)"
+  torch_tag="$("$PY" -c 'import torch; print(torch.__version__.replace("+", "-"))')"
+  python_tag="$("$PY" -c 'import sys; print(f"cp{sys.version_info.major}{sys.version_info.minor}")')"
+  cache="$WHEEL_DIR/sageattention-$torch_tag-$python_tag-sm${cap/./}"
+  wheel="$(ls "$cache"/sageattention-*.whl 2>/dev/null | head -1 || true)"
+  if [[ -n "$wheel" ]]; then
+    echo "  using the cached build $wheel"
   else
-    cap="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d ' ' || true)"
-    torch_tag="$("$PY" -c 'import torch; print(torch.__version__.replace("+", "-"))')"
-    cache="$WHEEL_DIR/sageattention-$torch_tag-sm${cap/./}"
-    wheel="$(ls "$cache"/sageattention-*.whl 2>/dev/null | head -1 || true)"
-    if [[ -n "$wheel" ]]; then
-      echo "  using the cached build $wheel"
-    else
-      nvcc_bin="$(command -v nvcc || ls /usr/local/cuda/bin/nvcc 2>/dev/null || true)"
-      if [[ -n "$nvcc_bin" && -n "$cap" ]]; then
-        log "Building SageAttention 2 for sm_${cap/./} with $("$nvcc_bin" --version | tail -1) (first start only, about 10 minutes)"
-        mkdir -p "$cache"
-        "$PY" -m pip install --quiet ninja packaging setuptools wheel
-        if env PATH="$(dirname "$nvcc_bin"):$PATH" CUDA_HOME="$(dirname "$(dirname "$nvcc_bin")")" \
-             TORCH_CUDA_ARCH_LIST="$cap" MAX_JOBS="${MAX_JOBS:-8}" \
-             "$PY" -m pip wheel --no-build-isolation --no-deps -w "$cache" "git+$SAGE_REPO@$SAGE_REF" \
-             >"$LOG_DIR/sageattention-build.log" 2>&1; then
-          wheel="$(ls "$cache"/sageattention-*.whl 2>/dev/null | head -1 || true)"
-        else
-          warn "SageAttention 2 build failed; the full output is in $LOG_DIR/sageattention-build.log"
-        fi
-      else
-        if [[ -z "$cap" ]]; then warn "nvidia-smi found no GPU; SageAttention 2 can't be built here"
-        else warn "No CUDA compiler (nvcc) in this image; SageAttention 2 can't be built here"; fi
+    nvcc_bin="$(command -v nvcc || ls /usr/local/cuda/bin/nvcc 2>/dev/null || true)"
+    if [[ -n "$nvcc_bin" && -n "$cap" ]]; then
+      if ! "$nvcc_bin" --version | grep -q "release ${TORCH_CUDA_VERSION},"; then
+        warn "SageAttention build needs a CUDA $TORCH_CUDA_VERSION compiler matching PyTorch; change the RunPod container image"
+        return 1
       fi
-    fi
-    if [[ -n "$wheel" ]]; then
-      "$PY" -m pip install --quiet --force-reinstall --no-deps "$wheel" || warn "Installing $wheel failed"
-    fi
-    if ! sage_works; then
-      warn "Using SageAttention 1 instead (slower than 2, still faster than the default)"
-      "$PY" -m pip install --quiet "sageattention==1.0.6" || warn "SageAttention 1 could not be installed"
+      log "Building SageAttention 2 for sm_${cap/./} with $("$nvcc_bin" --version | tail -1) (first start only, about 10 minutes)"
+      mkdir -p "$cache"
+      "$PY" -m pip install --quiet ninja packaging setuptools wheel
+      if env PATH="$(dirname "$nvcc_bin"):$PATH" CUDA_HOME="$(dirname "$(dirname "$nvcc_bin")")" \
+           TORCH_CUDA_ARCH_LIST="$cap" MAX_JOBS="${MAX_JOBS:-$(( $(nproc) > 16 ? 16 : $(nproc) ))}" \
+           "$PY" -m pip wheel --no-build-isolation --no-deps -w "$cache" "git+$SAGE_REPO@$SAGE_REF" \
+           >"$LOG_DIR/sageattention-build.log" 2>&1; then
+        wheel="$(ls "$cache"/sageattention-*.whl 2>/dev/null | head -1 || true)"
+        log "SageAttention 2 built"
+      else
+        warn "SageAttention 2 build failed; the full output is in $LOG_DIR/sageattention-build.log"
+      fi
+    elif [[ -z "$cap" ]]; then
+      warn "nvidia-smi found no GPU; SageAttention 2 can't be built here"
+    else
+      warn "No CUDA compiler (nvcc) in this image; SageAttention 2 can't be built here"
     fi
   fi
-  if sage_works; then
-    SAGE_FLAG="--use-sage-attention"
-    echo "  sageattention $(sage_version): ComfyUI will start with --use-sage-attention"
-  else
-    warn "SageAttention does not work on this pod; ComfyUI starts with its default attention"
+  if [[ -n "$wheel" ]]; then
+    "$PY" -m pip install --quiet --force-reinstall --no-deps "$wheel" || warn "Installing $wheel failed"
   fi
+  if ! sage_works; then
+    warn "Using SageAttention 1 instead (slower than 2, still faster than the default)"
+    "$PY" -m pip install --quiet "sageattention==1.0.6" || warn "SageAttention 1 could not be installed"
+  fi
+}
+
+if [[ "$SAGE_ATTENTION" == 1 ]]; then
+  log "SageAttention: preparing it in the background while the models download (progress: $SAGE_LOG)"
+  # A failure inside must fall through to the SageAttention 1 fallback, not end setup, so the subshell drops the ERR trap.
+  ( trap - ERR; set +e; install_sage ) >"$SAGE_LOG" 2>&1 &
+  SAGE_PID=$!
 fi
 
 # ---------------------------------------------------------------- 4. models
@@ -317,6 +369,20 @@ if [[ "$SKIP_MODELS" != 1 ]]; then
     [[ -f "$COMFY_DIR/models/$folder/$name" ]] \
       || warn "$var: Martini Shot's render workflow loads $folder/$name, which is not installed. Rendering will fail until the app can pick other models."
   done
+fi
+
+# ---------------------------------------------------------------- 4b. wait for SageAttention
+if [[ -n "$SAGE_PID" ]]; then
+  if kill -0 "$SAGE_PID" 2>/dev/null; then log "Waiting for the SageAttention build to finish (models are done)"; fi
+  wait "$SAGE_PID" || true
+  log "SageAttention"
+  cat "$SAGE_LOG"
+  if sage_works; then
+    SAGE_FLAG="--use-sage-attention"
+    echo "  sageattention $(sage_version): ComfyUI will start with --use-sage-attention"
+  else
+    warn "SageAttention does not work on this pod; ComfyUI starts with its default attention"
+  fi
 fi
 
 # ---------------------------------------------------------------- 5. start

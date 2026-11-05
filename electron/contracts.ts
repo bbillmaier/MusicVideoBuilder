@@ -122,6 +122,8 @@ export type PlanSection = {
   location: string;
   locationMode: LocationMode;
   beat: string;
+  /** The planner's original action when the user edited `beat`; null when the beat is the planner's own. */
+  plannerBeat: string | null;
   contrast: string;
   /** The planner's own phase word, e.g. "establishment". */
   phase: string;
@@ -461,6 +463,8 @@ export type ClipDetail = {
   continuesFrom: number | null;
   /** Clips whose videos must render again when this clip changes (it plus the clips that reuse its frames). */
   rerenderWith: number[];
+  /** The song section this clip belongs to and its action in the current plan; null when the clip has no section. */
+  sectionAction: { section: number; action: string; plannerAction: string | null } | null;
 };
 
 export type ClipRefRole = "person" | "outfit" | "location";
@@ -501,6 +505,20 @@ export type ClipChanges = {
 };
 
 export type ClipRevisionMode = "Try another take" | "Apply manual direction" | "Apply shot settings";
+
+/** What editing one section's action touches, shown before the user confirms. */
+export type SectionActionImpact = {
+  section: number;
+  action: string;
+  /** The planner's original when the action was edited; null otherwise. */
+  plannerAction: string | null;
+  /** Clips of the current prompt package whose prompts get a new LLM take built around the new action. */
+  retake: number[];
+  /** Clips whose videos must render again: the retaken clips plus the clips that reuse their frames. */
+  rerender: number[];
+  /** Why no clips are retaken (no package yet, or the package is out of date), or null. */
+  note: string | null;
+};
 
 export type ClipRevisionRequest = {
   mode: ClipRevisionMode;

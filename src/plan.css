@@ -74,7 +74,15 @@
 .section-when span { color: var(--text-muted); font-size: var(--text-sm); }
 .section-body { min-width: 0; }
 .section-body h3 { margin: 0 0 6px; font-size: var(--text-md); display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-.section-body p { margin: 3px 0; color: var(--text-2); line-height: 1.45; }
+.section-body p, .section-body .section-line { margin: 3px 0; color: var(--text-2); line-height: 1.45; }
+.section-line .section-action-editor { margin-top: 4px; }
+/* Section action editor (shared with Produce) */
+.section-action { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.section-action .btn-link, .section-action .btn { flex: none; }
+.section-action-editor { display: grid; gap: var(--space-2); }
+.section-action-editor textarea { width: 100%; resize: vertical; line-height: 1.45; padding: 8px 10px; background: var(--surface-inset); }
+.section-action-buttons { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.section-action-quote { margin: var(--space-2) 0; padding: 8px 12px; border-left: 3px solid var(--border-strong); color: var(--text-2); background: var(--surface-inset); border-radius: 4px; }
 .sec-no { display: inline-block; min-width: 24px; color: var(--text-faint); }
 .scene-tag { margin-left: 8px; color: var(--text-muted); font-size: var(--text-xs); border: 1px solid var(--border-strong); border-radius: 4px; padding: 0 5px; }
 .section-length { display: grid; justify-items: end; gap: 2px; padding-left: var(--space-3); border-left: 1px solid var(--border-subtle); }

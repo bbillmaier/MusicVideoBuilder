@@ -331,10 +331,8 @@ def plan_auto_shots(analysis: dict[str, Any], refs: list[dict[str, Any]], *, see
                 scene = "B-roll"
             elif k > 0 and rng.random() < broll_amount * 0.35:
                 scene = "B-roll"  # an occasional insert inside a section
-            elif role in ("verse", "bridge") and rng.random() < performance_vs_dance:
-                scene = "Performance"
-            elif role == "chorus" and rng.random() < performance_vs_dance * 0.5:
-                scene = "Performance"
+            elif role in ("verse", "bridge", "chorus") and rng.random() < performance_vs_dance:
+                scene = "Performance"  # the slider alone decides; at 100 every verse, bridge, and chorus shot sings
             elif role in ("verse", "bridge") and rng.random() < freeform_amount * (1.5 if location and location.get("actions") else 1.0):
                 scene = "Freeform"  # locations with actions get a bit more Freeform: there is something to do
             else:

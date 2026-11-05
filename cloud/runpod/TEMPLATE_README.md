@@ -12,6 +12,8 @@ Everything is stored on your network volume, so later starts take a few minutes 
 
 ## Before you deploy
 
+- **Container image:** `runpod/pytorch:1.6.0-cu1300-torch291-ubuntu2404`. Setup installs Torch 2.10.0/cu130 and builds SageAttention 2.2.0 with the CUDA 13.0 compiler. The host driver must support CUDA 13.
+- **Existing CUDA 12.8 volumes:** update the container image and refresh the setup script before launching it. Setup upgrades the Python environment and rebuilds SageAttention while keeping downloaded models. See the full README's CUDA 13 migration instructions.
 - **Network volume:** attach one of **120 GB or more**. Without it, the 64 GB of models download again on every start.
 - **GPU:** 48 GB of VRAM or more (L40S, RTX 6000 Ada, A6000, A100, H100).
 - **RAM:** 96 GB or more is recommended.
@@ -37,8 +39,10 @@ in Settings at any time; project paths and local folder actions do not change.
 | Port | Use |
 |---|---|
 | 8188 | ComfyUI |
-| 8888 | Jupyter (file browser and terminal) |
+| 8888 | Jupyter (file browser and terminal). Password: `MartiniPass`, unless you set `JUPYTER_PASSWORD` |
 | 22 | SSH |
+
+The default Jupyter password is the same for everyone, and Jupyter gives full control of the pod. Set `JUPYTER_PASSWORD` under **Environment Variables** to use your own.
 
 ## Choosing models
 
@@ -63,7 +67,8 @@ Comma lists download several at once, e.g. `DIRECTOR_LLMS=qwen3vl-8b-fp8,qwen3vl
 | `MARTINISHOT_REF` | `main` | Branch or tag of the Martini Shot nodes |
 | `COMFYUI_REF` | the tested version | `master` for the newest ComfyUI |
 | `COMFYUI_ARGS` | | Extra ComfyUI flags |
-| `SAGE_ATTENTION` | `1` | Faster video rendering. The first start spends about 10 more minutes building it; `0` turns it off |
+| `SAGE_ATTENTION` | `1` | Faster video rendering. It builds while the models download, so it adds little to the first start; `0` turns it off |
+| `JUPYTER_PASSWORD` | `MartiniPass` | Password for Jupyter on port 8888 |
 | `SKIP_MODELS` | `0` | `1` installs without downloading models (a quick, cheap test) |
 | `HF_TOKEN` | | Only for gated Hugging Face models |
 | `MARTINI_SHOT_TOKEN` | | Recommended secret for Martini Shot's project-file API |

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ContractList } from "./DirectionView";
+import { SectionActionEditor } from "./SectionActionEditor";
 import { formatDuration, formatTime, readableError } from "./ProjectsView";
 import { CACHE_LABELS, cacheExplanation, elapsed, isActive, usePlanOverview, useTicker } from "./usePlan";
 import { Button, ConfirmDialog, Disclosure, EmptyState, Icon, LoadingPage, NoProject, Notice, PageHeader, PanelHead, Pill, cx, type LucideIcon, type Tone } from "./ui";
@@ -104,7 +105,7 @@ function PlanContent({ project, comfy, onNavigate }: { project: ProjectDetail; c
       <Summary plan={plan} project={project} />
       {plan.storyWheel && <StoryWheel plan={plan} />}
       <div className="plan-grid">
-        <SectionPlan plan={plan} />
+        <SectionPlan plan={plan} projectId={project.id} editable={!running} onError={setError} />
         <aside className="plan-side">
           <CreativeContract plan={plan} />
           <PlanNotes plan={plan} run={planRun} />
@@ -197,7 +198,7 @@ function StoryWheel({ plan }: { plan: PlanData }) {
   </section>;
 }
 
-function SectionPlan({ plan }: { plan: PlanData }) {
+function SectionPlan({ plan, projectId, editable, onError }: { plan: PlanData; projectId: string; editable: boolean; onError(message: string): void }) {
   const groups: { title: string; sections: PlanSection[] }[] = plan.storyWheel
     ? PHASES.map((phase) => ({ title: phase, sections: plan.sections.filter((section) => section.wheelPhase === phase) })).filter((group) => group.sections.length)
     : [{ title: "Sections", sections: plan.sections }];
@@ -216,12 +217,13 @@ function SectionPlan({ plan }: { plan: PlanData }) {
           </div>
           <div className="section-body">
             <h3>{first.location || "Place chosen later"} <Pill tone={mode.tone} icon={mode.icon} title={mode.title}>{mode.text}</Pill></h3>
-            {run.map((section) => <p key={section.number}>
+            {run.map((section) => <div key={section.number} className="section-line">
               {run.length > 1 && <span className="sec-no num">{section.number}</span>}
-              {section.beat || <span className="muted">No beat from the planner; the rules decide.</span>}
+              <SectionActionEditor projectId={projectId} section={section.number} action={section.beat} plannerAction={section.plannerBeat ?? null}
+                disabled={!editable} onError={onError} />
               {section.scene && <span className="scene-tag">{section.scene}</span>}
               {section.contrast && <span className="muted"> · contrast: {section.contrast}</span>}
-            </p>)}
+            </div>)}
           </div>
           <div className="section-length">
             <b className="num"><Icon.elapsed size={15} aria-hidden />{formatDuration(last.end - first.start)}</b>

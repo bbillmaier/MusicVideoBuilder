@@ -5,7 +5,7 @@
 import {
   ArrowRight, Ban, Check, ChevronDown, ChevronRight, CircleCheck, CircleDashed, CircleX, Clapperboard, Clock, CloudLightning, Copy, Cpu,
   Database, Ellipsis, ExternalLink, FileImage, FileText, Film, Folder, FolderOpen, Hourglass, ImageOff, ImagePlus, Images, Info, Layers,
-  ListTree, LoaderCircle, MapPin, Minus, Monitor, Music, Orbit, Palette, Pause, Play, Plus, RefreshCw, Replace, RotateCcw, Save, Settings,
+  ListTree, LoaderCircle, MapPin, Minus, Monitor, Music, Orbit, Palette, Pause, Pencil, Play, Plus, RefreshCw, Replace, RotateCcw, Save, Settings,
   Shirt, Shuffle, SlidersHorizontal, Square, Terminal, Timer, Trash2, TriangleAlert, User, X, Zap, type LucideIcon,
 } from "lucide-react";
 
@@ -15,7 +15,7 @@ export const Icon = {
   // Actions
   add: Plus, save: Save, openFolder: FolderOpen, folder: Folder, copy: Copy, refresh: RefreshCw, check: Check, render: Play, pause: Pause,
   stop: Square, retry: RotateCcw, reroll: Shuffle, external: ExternalLink, next: ArrowRight, remove: Trash2, replace: Replace, more: Ellipsis,
-  close: X, minus: Minus, expand: ChevronRight, collapse: ChevronDown,
+  close: X, minus: Minus, expand: ChevronRight, collapse: ChevronDown, edit: Pencil,
   // States
   success: CircleCheck, warning: TriangleAlert, error: CircleX, working: LoaderCircle, queued: Clock, unavailable: Ban, pending: CircleDashed,
   info: Info, log: Terminal, local: Monitor,

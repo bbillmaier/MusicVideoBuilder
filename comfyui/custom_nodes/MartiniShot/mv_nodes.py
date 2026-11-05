@@ -53,6 +53,7 @@ from .mv_writer import (
     labels_text,
     parse_clip_response,
     system_prompt,
+    word_range,
 )
 from .mv_writer import continuity_sentence as continuity_text
 from .ref2va_nodes import AUDIO_SOCKETS, CAMERA_PRESETS, CATEGORY, make_audio, multiline
@@ -807,6 +808,18 @@ def _apply_shot_changes(folder: Path, record: dict[str, Any], changes: dict[str,
     Each change also leaves a producer note, so every later take on this clip still follows it."""
     done: list[str] = []
     notes = record.setdefault("producer_notes", {})
+    if "intention" in changes:
+        # a section action edited on the Produce page: the LLM rebuilds the clip around it
+        text = _clean(changes["intention"])
+        if not take:
+            raise ValueError("A new section action needs a new take, so the LLM can rewrite the clip around it.")
+        if not text:
+            raise ValueError("The section action is empty.")
+        if text != record.get("intention_override", ""):
+            record["intention_override"] = text
+            notes["intention"] = (f"The shot intention for this clip is now: {text}. It replaces the shot intention "
+                                  "above; build the clip around it.")
+            done.append(f"section action: {text}")
     scene = changes.get("scene")
     if scene and scene != record["scene"]:
         if not take:
@@ -964,6 +977,12 @@ class MiniMaxH3MusicVideoPromptRevision:
                 [SOUNDSCAPE_HEADER] if record["scene"] != "Dance" and "\nSOUNDSCAPE:" not in base else [])
             if extra:
                 message += "\n\nAlso include these headers after ACTION:\n" + "\n".join(extra)
+            if record["scene"] == "Dance" and "words of choreography" not in base:
+                # packages written before the Dance word range asked for at most ~14 words a second; overrule that
+                least, most = word_range("Dance", float(record.get("clip_seconds", 0.0)) or 8.0)
+                message += (f"\n\nLENGTH (overrides any word limit above): write between {least} and {most} words of "
+                            "choreography, a sequence of specific named moves in every phrase: which side and limb, "
+                            "direction, level, and timing, with arms, hands, feet, hips, torso, head, and gaze.")
             refs = _creative_refs(path, record)
             image_kwargs, _image_notes = _prepare_llm_images(llm, refs, True)
             run_seed = int(seed) + index + int(record.get("revision", 0)) * 1009
