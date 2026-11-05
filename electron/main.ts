@@ -1,15 +1,16 @@
 import "dotenv/config";
-import { app, BrowserWindow, clipboard, dialog, ipcMain, net, protocol, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, protocol, shell } from "electron";
+import { createReadStream, promises as fsp } from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { Readable } from "node:stream";
 import { closeDatabase, databaseStatus, getMachineSettings, recentComfyJobs, saveMachineSettings } from "./db";
-import { comfyEndpoint, comfyStatus, runWorkflowTemplate, serializeComfyWork } from "./comfy-client";
+import { comfyEndpoint, comfyStatus, renderSamplerOptions, runWorkflowTemplate, serializeComfyWork } from "./comfy-client";
 import { projectStorage } from "./project-storage";
 import { listWorkflowTemplates } from "./workflow-template";
 import type { AssetRole } from "./contracts";
 import { isAssetRole, ROLE_RULES } from "./project-rules";
 import {
-  addAssets, assetRole, configureProjectService, createProject, getProject, openProject, previewFile, projectFolder, projectsOverview,
+  addAssets, assetRole, configureProjectService, createProject, forgetProject, getProject, openProject, previewFile, projectFolder, projectDeleteTarget, projectsOverview,
   recordSongDuration, removeAsset, replaceAsset, retryComfySync,
 } from "./project-service";
 import { configurePlanService, directorLlmOptions, planOverview, saveDirection, startPlan } from "./plan-service";
@@ -24,11 +25,49 @@ import {
 import {
   configureResultsService, exportReport, finalOutputFolder, finalVideoFile, finalVideoPath, reportText, resultsOverview, startStitch,
 } from "./results-service";
+import { configureTimelineService, discardUnsavedTimeline, saveTimeline, songAnalysisRunning, songTimeline, startSongAnalysis, timelineSaveImpact } from "./timeline-service";
 
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
 
 // Read-only access to a project's stored asset copies (thumbnails, song waveform). Only DB-registered files resolve.
 protocol.registerSchemesAsPrivileged([{ scheme: "martini-asset", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true } }]);
+
+const MEDIA_TYPES: Record<string, string> = {
+  ".flac": "audio/flac", ".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg", ".m4a": "audio/mp4", ".aac": "audio/aac",
+  ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
+  ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".bmp": "image/bmp", ".gif": "image/gif",
+};
+
+/** Serves a local file with HTTP range support. Without 206 responses Chromium cannot seek audio or video: setting
+ *  currentTime snaps back to the start. */
+async function fileResponse(file: string, range: string | null): Promise<Response> {
+  let size: number;
+  try {
+    const stat = await fsp.stat(file);
+    if (!stat.isFile()) return new Response("Not found", { status: 404 });
+    size = stat.size;
+  } catch { return new Response("Not found", { status: 404 }); }
+  const headers = new Headers({
+    "Content-Type": MEDIA_TYPES[path.extname(file).toLowerCase()] ?? "application/octet-stream",
+    "Accept-Ranges": "bytes", "Access-Control-Allow-Origin": "*", "Cache-Control": "no-cache",
+  });
+  const match = range?.match(/^bytes=(\d*)-(\d*)$/);
+  if (range && match && (match[1] || match[2])) {
+    let start = match[1] ? Number(match[1]) : Math.max(0, size - Number(match[2]));
+    let end = match[1] && match[2] ? Number(match[2]) : size - 1;
+    end = Math.min(end, size - 1);
+    if (!match[1]) start = Math.max(0, start);
+    if (start > end || start >= size) {
+      headers.set("Content-Range", `bytes */${size}`);
+      return new Response(null, { status: 416, headers });
+    }
+    headers.set("Content-Range", `bytes ${start}-${end}/${size}`);
+    headers.set("Content-Length", String(end - start + 1));
+    return new Response(Readable.toWeb(createReadStream(file, { start, end })) as ReadableStream, { status: 206, headers });
+  }
+  headers.set("Content-Length", String(size));
+  return new Response(Readable.toWeb(createReadStream(file)) as ReadableStream, { status: 200, headers });
+}
 
 function createWindow(): void {
   const window = new BrowserWindow({
@@ -81,6 +120,10 @@ app.whenReady().then(() => {
     onChange: (projectId) => BrowserWindow.getAllWindows().forEach((window) => window.webContents.send("martini:project-changed", projectId)),
   });
 
+  configureTimelineService({
+    isDevelopment,
+    onChange: (projectId) => BrowserWindow.getAllWindows().forEach((window) => window.webContents.send("martini:plan-changed", projectId)),
+  });
   configurePlanService({
     isDevelopment,
     onChange: (projectId) => BrowserWindow.getAllWindows().forEach((window) => window.webContents.send("martini:plan-changed", projectId)),
@@ -126,10 +169,7 @@ app.whenReady().then(() => {
     // paths. Only the legacy `file` route uses a Martini Shot-relative path.
     const storage = await projectStorage();
     const localFile = path.isAbsolute(file) ? file : storage.localPath!(file);
-    const response = await net.fetch(pathToFileURL(localFile).toString(), { headers: request.headers });
-    const headers = new Headers(response.headers);
-    headers.set("Access-Control-Allow-Origin", "*");
-    return new Response(response.body, { status: response.status, headers });
+    return fileResponse(localFile, request.headers.get("range"));
   });
 
   ipcMain.handle("martini:database-status", () => databaseStatus());
@@ -154,6 +194,18 @@ app.whenReady().then(() => {
     const error = await shell.openPath(projectFolder(projectId));
     if (error) throw new Error(error);
   });
+  // The folder goes to the Recycle Bin (recoverable), then the project is removed from the database. If the folder cannot be
+  // moved, nothing is removed.
+  ipcMain.handle("martini:project-delete", async (_event, projectId: unknown) => {
+    if (typeof projectId === "string" && songAnalysisRunning(projectId)) throw new Error("The song is being analyzed. Wait for it to finish, then delete the project.");
+    const target = await projectDeleteTarget(projectId);
+    if (target.folder) {
+      try { await shell.trashItem(target.folder); }
+      catch (error) { throw new Error(`Could not move ${target.folder} to the Recycle Bin, so "${target.name}" was not deleted. Close anything using files in it and try again. (${error instanceof Error ? error.message : String(error)})`); }
+    }
+    forgetProject(target.id);
+    return projectsOverview();
+  });
   ipcMain.handle("martini:project-retry-comfy", (_event, projectId: unknown) => retryComfySync(projectId));
   ipcMain.handle("martini:assets-add", async (event, projectId: unknown, role: unknown) => {
     const assetType = requireRole(role);
@@ -177,11 +229,17 @@ app.whenReady().then(() => {
     if (confirmed !== true) throw new Error("Reroll needs confirmation.");
     return startPlan(projectId, true);
   });
+  ipcMain.handle("martini:song-timeline", (_event, projectId: unknown) => songTimeline(projectId));
+  ipcMain.handle("martini:song-analyze", (_event, projectId: unknown) => startSongAnalysis(projectId));
+  ipcMain.handle("martini:timeline-impact", (_event, projectId: unknown, draft: unknown) => timelineSaveImpact(projectId, draft));
+  ipcMain.handle("martini:timeline-discard-unsaved", (_event, projectId: unknown) => discardUnsavedTimeline(projectId));
+  ipcMain.handle("martini:timeline-save", (_event, projectId: unknown, draft: unknown, confirmed: unknown) => saveTimeline(projectId, draft, confirmed));
   ipcMain.handle("martini:section-action-impact", (_event, projectId: unknown, section: unknown) => sectionActionImpact(projectId, section));
   // Rewrites the clips that play the section when a prompt package exists; the renderer shows them and asks first.
   ipcMain.handle("martini:section-action-edit", (_event, projectId: unknown, section: unknown, action: unknown, confirmed: unknown) =>
     editSectionAction(projectId, section, action, confirmed));
   ipcMain.handle("martini:director-llm-options", () => directorLlmOptions());
+  ipcMain.handle("martini:render-sampler-options", () => renderSamplerOptions());
   ipcMain.handle("martini:locations-overview", (_event, projectId: unknown) => locationsOverview(projectId));
   ipcMain.handle("martini:locations-check", (_event, projectId: unknown) => startLocationCheck(projectId));
   ipcMain.handle("martini:locations-open-folder", async (_event, projectId: unknown) => {

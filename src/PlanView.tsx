@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ContractList } from "./DirectionView";
 import { SectionActionEditor } from "./SectionActionEditor";
+import { SongTimeline } from "./SongTimeline";
 import { formatDuration, formatTime, readableError } from "./ProjectsView";
 import { CACHE_LABELS, cacheExplanation, elapsed, isActive, usePlanOverview, useTicker } from "./usePlan";
 import { Button, ConfirmDialog, Disclosure, EmptyState, Icon, LoadingPage, NoProject, Notice, PageHeader, PanelHead, Pill, cx, type LucideIcon, type Tone } from "./ui";
@@ -101,8 +102,12 @@ function PlanContent({ project, comfy, onNavigate }: { project: ProjectDetail; c
     </Notice>}
     {!running && blockers.map((blocker) => <Notice key={blocker} tone="error">{blocker}</Notice>)}
 
-    {!plan ? <NoPlan running={running} canStart={canStart} onCreate={() => void start(false)} onDirection={() => onNavigate("Direction")} /> : <>
+    {!plan ? <>
+      <SongTimeline projectId={project.id} planRunning={running} />
+      <NoPlan running={running} canStart={canStart} onCreate={() => void start(false)} onDirection={() => onNavigate("Direction")} />
+    </> : <>
       <Summary plan={plan} project={project} />
+      <SongTimeline projectId={project.id} planRunning={running} />
       {plan.storyWheel && <StoryWheel plan={plan} />}
       <div className="plan-grid">
         <SectionPlan plan={plan} projectId={project.id} editable={!running} onError={setError} />

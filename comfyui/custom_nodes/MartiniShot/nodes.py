@@ -8,12 +8,15 @@ import math
 import random
 from pathlib import Path
 
+import numpy as np
+
 from .director_cache import cached_llm, clear_cache
 from .location_evidence import analyze_locations
 from .mv_auto import analyze_song, plan_auto_shots
 from .mv_auto_nodes import MiniMaxH3AutoDirector
 from .mv_nodes import MiniMaxH3MusicVideoDirector, MiniMaxH3MusicVideoPromptRevision, MiniMaxH3MusicVideoSegmentLoader
-from .mv_story import (CREATIVE_BRIEF_SYSTEM, build_creative_brief_message,
+from .mv_story import (CREATIVE_BRIEF_SYSTEM, STORY_SYSTEM, TIMELINE_SHOT_RULES, build_creative_brief_message, parse_story,
+                       timeline_shot_rows,
                        creative_direction_text, parse_creative_brief)
 from .dance_nodes import run_llm
 from .director_context import attach_context_to_shots, build_director_context
@@ -65,6 +68,96 @@ def _cached(lines, llm, stage, message, temperature, tokens, seed, system):
     response, hit = cached_llm(stage, llm, message, {}, temperature, tokens, seed, system, run_llm)
     lines.append(f"  {stage}: {'HIT' if hit else 'MISS'}")
     return response
+
+
+SONG_ANALYSIS_FILE = "song_analysis.json"
+SONG_ANALYSIS_VERSION = 1
+
+
+def _song_sha256(project) -> str:
+    """Fingerprint of the project's stored song, so a saved analysis is never used for a replaced song."""
+    import hashlib
+    digest = hashlib.sha256()
+    with open(Path(project["folder"]) / "assets" / project["manifest"]["song"], "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _saved_song_analysis(project):
+    """song_analysis.json when it was made from the project's current song; otherwise None."""
+    if not (Path(project["folder"]) / SONG_ANALYSIS_FILE).is_file():
+        return None
+    try:
+        saved = read_state(project, SONG_ANALYSIS_FILE)
+    except (ValueError, OSError, json.JSONDecodeError):
+        return None
+    if saved.get("version") != SONG_ANALYSIS_VERSION or saved.get("song_sha256") != _song_sha256(project):
+        return None
+    analysis = saved.get("analysis")
+    return analysis if isinstance(analysis, dict) and analysis.get("sections") else None
+
+
+def _analyze_project_song(project):
+    waveform = project["audio"]["waveform"][0].float().cpu().numpy()
+    return analyze_song(waveform, int(project["audio"]["sample_rate"]))
+
+
+TIMELINE_FILE = "timeline.json"
+TIMELINE_VERSION = 1
+TIMELINE_SCENES = ("Dance", "Performance", "Freeform", "B-roll")
+TIMELINE_TRANSITIONS = ("Hard cut", "New angle", "Continue")
+
+
+def _saved_timeline(project):
+    """The user's timeline.json when it is valid and was made for the project's current song; otherwise None.
+    The timeline owns all timing: section bounds and roles, and every shot cut. Planning never changes it."""
+    path = Path(project["folder"]) / TIMELINE_FILE
+    if not path.is_file():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if value.get("version") != TIMELINE_VERSION or value.get("song_sha256") != _song_sha256(project):
+        return None
+    try:
+        duration = float(value["duration"])
+        sections = [{"start": float(s["start"]), "end": float(s["end"]), "role": str(s.get("role") or "verse"),
+                     "label": str(s.get("label") or "A"), "energy": float(s.get("energy", 0.5)),
+                     "loudness": float(s.get("loudness", 0.0))} for s in value["sections"]]
+        shots = [{"start": float(s["start"]), "scene": s.get("scene") if s.get("scene") in TIMELINE_SCENES else None,
+                  "transition": s.get("transition") if s.get("transition") in TIMELINE_TRANSITIONS else None}
+                 for s in value["shots"]]
+        beats = np.asarray([float(b) for b in value.get("beats", [])], dtype=np.float64)
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not sections or abs(sections[0]["start"]) > 1e-6 or abs(sections[-1]["end"] - duration) > 0.05:
+        return None
+    if any(abs(a["end"] - b["start"]) > 1e-6 or a["end"] <= a["start"] for a, b in zip(sections, sections[1:])):
+        return None
+    starts = [shot["start"] for shot in shots]
+    if starts != sorted(set(starts)) or not starts or starts[0] != 0.0 or starts[-1] >= duration:
+        return None
+    if any(min(abs(section["start"] - t) for t in starts) > 1e-3 for section in sections):
+        return None  # every section boundary is a cut
+    return {"duration": duration, "bpm": float(value.get("bpm") or 0.0), "beats": beats, "sections": sections, "shots": shots}
+
+
+def _timeline_analysis(timeline):
+    """A song analysis whose sections are the timeline's, in the shape analyze_song returns."""
+    beats = timeline["beats"]
+    counts = {}
+    for section in timeline["sections"]:
+        counts[section["label"]] = counts.get(section["label"], 0) + 1
+    sections = []
+    for section in timeline["sections"]:
+        begin = 0 if section["start"] <= 0 else int(np.searchsorted(beats, section["start"] - 1e-6))
+        end = len(beats) if section["end"] >= timeline["duration"] - 1e-6 else int(np.searchsorted(beats, section["end"] - 1e-6))
+        sections.append({"beat_start": begin, "beat_end": max(begin, end), "start": section["start"], "end": section["end"],
+                         "label": section["label"], "loudness": section["loudness"], "energy": section["energy"],
+                         "repeats": counts[section["label"]], "role": section["role"]})
+    return {"duration": timeline["duration"], "bpm": timeline["bpm"], "beats": beats, "sections": sections}
 
 
 def _story_state(project, analysis, story, creative_direction, settings, creative_contract=None):
@@ -136,8 +229,16 @@ class MartiniShotPlanStory:
             prior = seed
             seed = random.SystemRandom().randint(0, 0xFFFFFFFF)
             lines.append(f"  reset: {clear_cache()}; seed {prior} -> {seed}")
-        waveform = project["audio"]["waveform"][0].float().cpu().numpy()
-        analysis = analyze_song(waveform, int(project["audio"]["sample_rate"]))
+        # The song timeline on Plan shows song_analysis.json before any plan exists; planning from that same analysis
+        # keeps its sections and the plan's identical. Projects without the file analyze the song as before.
+        timeline = _saved_timeline(project)
+        analysis = _timeline_analysis(timeline) if timeline else _saved_song_analysis(project)
+        if timeline:
+            lines.append(f"  song timeline: planned on {TIMELINE_FILE} ({len(timeline['sections'])} sections)")
+        elif analysis is None:
+            analysis = _analyze_project_song(project)
+        else:
+            lines.append(f"  song analysis: reused {SONG_ANALYSIS_FILE}")
         refs = project["refs"]
         evidence_lines = analyze_locations(refs, llm, run_llm, lambda _llm, image: {"image": image}, seed)
         creative = {}
@@ -151,6 +252,7 @@ class MartiniShotPlanStory:
             bool(request_performer_location_images), int(min_locations), direction,
             lambda stage, message, _kwargs, temperature, tokens, call_seed, system:
                 _cached(lines, llm, stage, message, temperature, tokens, call_seed, system),
+            section_shots=timeline_shot_rows(analysis["sections"], timeline["shots"], timeline["duration"]) if timeline else None,
         )
         requested = []
         if request_performer_location_images:
@@ -163,6 +265,8 @@ class MartiniShotPlanStory:
             "request_performer_location_images": bool(request_performer_location_images), "seed": seed,
         }, creative)
         state["requested_locations"] = requested
+        if timeline:
+            state["timeline_shots"] = timeline["shots"]
         write_state(project, "story_plan.json", state)
         write_state(project, "director_context.json", state["director_context"])
         event_lines = [f"  {event['event']}: section {event['section']} (assigned deterministically)"
@@ -176,6 +280,182 @@ class MartiniShotPlanStory:
                              + (["", "Requested performer location images:"]
                                 + [f"  {name}: {requested_location_path(project, name)}" for name in requested] if requested else []))
         return state, report, bool(requested)
+
+
+class MartiniShotAnalyzeSong:
+    """Song analysis only (beats, bars, sections), no LLM: writes song_analysis.json for the Plan page's song timeline."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"project": ("MARTINI_PROJECT",)}}
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("report",)
+    FUNCTION = "analyze"
+    CATEGORY = CATEGORY
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        return float("nan")  # the song may have been replaced; the saved file is checked against it
+
+    def analyze(self, project):
+        saved = _saved_song_analysis(project)
+        if saved is not None:
+            analysis, how = saved, "reused"
+        else:
+            analysis, how = _analyze_project_song(project), "written"
+            write_state(project, SONG_ANALYSIS_FILE, {"version": SONG_ANALYSIS_VERSION, "project": project["name"],
+                                                      "song": project["manifest"]["song"],
+                                                      "song_sha256": _song_sha256(project), "analysis": analysis})
+        return (f"Martini Shot song analysis {how}: {len(analysis['sections'])} sections, "
+                f"{len(analysis['beats'])} beats, {float(analysis['bpm']):.1f} BPM, {float(analysis['duration']):.2f} s.",)
+
+
+SECTION_REWRITE_RULES = """You are rewriting only some sections of an existing music-video story after the user re-cut the song.
+The kept sections are fixed and must not be repeated or changed. Each rewritten section must continue from the section
+before it and lead into the section after it, keep the story's overall arc, and fit its new length and loudness."""
+
+
+class MartiniShotApplyTimeline:
+    """Applies the saved song timeline to an existing story plan. Story beats move with their sections; sections the
+    user split, merged, created, or deleted get new beats from the LLM. Timing is never changed: it is the timeline's."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"project": ("MARTINI_PROJECT",),
+                             "section_sources": ("STRING", {"default": "[]", "tooltip": "JSON list, one entry per timeline section: the plan section number its story beat comes from, or null to rewrite it."}),
+                             "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFF})},
+                "optional": {"llm": ("H3_PROMPT_LLM",)}}
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("report",)
+    FUNCTION = "apply"
+    CATEGORY = CATEGORY
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        return float("nan")  # reads timeline.json and story_plan.json, which the app edits
+
+    def apply(self, project, section_sources="[]", seed=0, llm=None):
+        timeline = _saved_timeline(project)
+        if timeline is None:
+            raise ValueError(f"{TIMELINE_FILE} is missing, invalid, or was made for a different song. Save the timeline again.")
+        plan = read_state(project, "story_plan.json")
+        sources = json.loads(section_sources or "[]")
+        if not isinstance(sources, list) or len(sources) != len(timeline["sections"]):
+            raise ValueError(f"section_sources must list one entry for each of the {len(timeline['sections'])} timeline sections.")
+        analysis = _timeline_analysis(timeline)
+        old_story = {int(number): beat for number, beat in (plan.get("story") or {}).items()}
+        story = {}
+        for number, source in enumerate(sources, start=1):
+            if isinstance(source, int) and source in old_story:
+                story[number] = copy.deepcopy(old_story[source])
+        rewrite = [number for number, source in enumerate(sources, start=1) if source is None]
+        lines, warnings = [], []
+        if rewrite and old_story:
+            if llm is None:
+                raise ValueError("Rewriting story sections needs the director LLM.")
+            settings = plan.get("settings", {})
+            message = self._message(project, plan, analysis, story, rewrite, bool(settings.get("story_wheel")),
+                                    timeline_shot_rows(analysis["sections"], timeline["shots"], timeline["duration"]))
+            response = _cached(lines, llm, "section rewrite", message, 0.7, 260 + 180 * len(rewrite),
+                               int(seed) + 97, STORY_SYSTEM)
+            allowed = self._places(project, story)
+            parsed, parse_warnings = parse_story(response, len(sources),
+                                                 [r["name"] for r in project["refs"] if r["kind"] == "Location"])
+            for number in rewrite:
+                beat = parsed.get(number)
+                if not beat:
+                    warnings.append(f"The LLM gave no beat for section {number}; the rules fill it.")
+                    continue
+                name = beat.get("new_location", "")
+                if name and beat.get("scene") != "B-roll" and name.lower() not in allowed:
+                    # A new performer place would need a location image the Locations step has not asked for.
+                    warnings.append(f"Section {number}: the new place '{name}' was dropped; the rules choose a place.")
+                    beat["new_location"] = ""
+                story[number] = beat
+            warnings += [w for w in parse_warnings if "gave no beat" not in w]
+        requested = []
+        if plan.get("settings", {}).get("request_performer_location_images"):
+            for beat in story.values():
+                name = beat.get("new_location", "")
+                if name and beat.get("scene") != "B-roll" and name.lower() not in {n.lower() for n in requested}:
+                    requested.append(name)
+        contract = (plan.get("director_context") or {}).get("creative_contract") or {}
+        state = dict(plan)
+        state.update({"analysis": analysis, "story": story, "timeline_shots": timeline["shots"], "requested_locations": requested,
+                      "director_context": build_director_context(project["name"], analysis, story, contract,
+                                                                 plan.get("settings", {}))})
+        write_state(project, "story_plan.json", state)
+        write_state(project, "director_context.json", state["director_context"])
+        kept = len(sources) - len(rewrite)
+        report = [f"Martini Shot timeline applied: {len(sources)} sections, {len(timeline['shots'])} shots; "
+                  f"{kept} story beat(s) kept, {len(rewrite)} rewritten."]
+        for number in rewrite:
+            beat = story.get(number)
+            place = beat and (beat.get("location") or beat.get("new_location") or "(rules)")
+            report.append(f"  section {number}: " + (f"{beat.get('scene') or '(rules)'} @ {place}: {beat.get('beat')}" if beat else "(rules)"))
+        report += [f"  WARNING: {w}" for w in warnings]
+        if lines:
+            report += ["", "Director cache:"] + lines
+        return ("\n".join(report),)
+
+    @staticmethod
+    def _places(project, story):
+        names = {r["name"].lower() for r in project["refs"] if r["kind"] == "Location"}
+        for beat in story.values():
+            for key in ("location", "new_location"):
+                if beat.get(key):
+                    names.add(beat[key].lower())
+        return names
+
+    @staticmethod
+    def _message(project, plan, analysis, story, rewrite, story_wheel, section_shots=None):
+        from .music_energy import energy_label
+        from .mv_plan import format_time
+        settings = plan.get("settings", {})
+        places = sorted({r["name"] for r in project["refs"] if r["kind"] == "Location" and not r.get("broll_only")}
+                        | {beat.get("location") or beat.get("new_location") for beat in story.values()
+                           if beat.get("location") or beat.get("new_location")})
+        outfits = [r["name"] for r in project["refs"] if r["kind"] == "Outfit"]
+        parts = [SECTION_REWRITE_RULES]
+        if str(settings.get("story_brief", "")).strip():
+            parts.append(f"The story (highest priority): {' '.join(str(settings['story_brief']).split())}")
+        if plan.get("creative_direction"):
+            parts.append("User creative direction (honor it without inventing unrelated plot facts):\n" + plan["creative_direction"])
+        parts.append("Locations to use, written exactly (do not invent new performer locations; a new place is allowed only for B-roll): "
+                     + (", ".join(places) if places else "none named: leave location empty for performer sections"))
+        if outfits:
+            parts.append("Outfits the performer can wear: " + ", ".join(outfits))
+        rows = []
+        for number, section in enumerate(analysis["sections"], start=1):
+            row = (f"Section {number}: {format_time(section['start'])}-{format_time(section['end'])}, {section['role']}, "
+                   f"{energy_label(section['energy'])} song-relative RMS loudness")
+            if section_shots and section_shots.get(number):
+                row += f", {section_shots[number]}"
+            if number in rewrite:
+                row += " -> REWRITE"
+            elif number in story:
+                beat = story[number]
+                row += (f" -> KEEP: scene {beat.get('scene') or 'rules'} @ {beat.get('location') or beat.get('new_location') or 'rules'}: "
+                        f"{beat.get('beat', '')}")
+                if story_wheel and (beat.get("starts") or beat.get("ends")):
+                    row += f" (starts: {beat.get('starts') or '-'}; ends: {beat.get('ends') or '-'})"
+            rows.append(row)
+        if section_shots:
+            parts.append(TIMELINE_SHOT_RULES)
+        parts.append("Song sections:\n" + "\n".join(rows))
+        targets = ", ".join(map(str, rewrite))
+        if story_wheel:
+            parts.append(f"Output exactly one line for each REWRITE section ({targets}), in order, and nothing else:\n"
+                         "SECTION <n> | scene: <Dance, Performance, Freeform, or B-roll> | location: <a location name> | beat: <one sentence> "
+                         "| contrast: none | phase: <dramatic job> | starts: <state> | turn: <change> | ends: <visible state> "
+                         "| anchor: <optional> | avoid: <short reset to avoid>")
+        else:
+            parts.append(f"Output exactly one line for each REWRITE section ({targets}), in order, and nothing else:\n"
+                         "SECTION <n> | scene: <Dance, Performance, Freeform, or B-roll> | location: <a location name> "
+                         "| beat: <one sentence> | contrast: none")
+        return "\n\n".join(parts)
 
 
 class MartiniShotLoadStoryPlan:
@@ -279,13 +559,15 @@ class MartiniShotBuildProductionPlan:
             outfit_change_rate=outfit_change_rate, continue_bias=continue_bias, lip_sync=bool(lip_sync), story=story,
             max_shot_seconds=max_shot_seconds, hard_cuts_change_location=bool(hard_cuts_change_location),
             require_performer_location_image=True,
+            fixed_shots=resolved_plan.get("timeline_shots") or None,
         )
         context = copy.deepcopy(resolved_plan.get("director_context", {}))
         attach_context_to_shots(shots, context)
         production = {"project": resolved_plan["project"], "analysis": resolved_plan["analysis"], "shots": shots,
                       "creative_direction": resolved_plan.get("creative_direction", ""),
                       "story_brief": resolved_plan.get("settings", {}).get("story_brief", ""),
-                       "dance_style": dance_style, "seed": int(seed), "director_context": context}
+                       "dance_style": dance_style, "seed": int(seed), "director_context": context,
+                      "timeline_shots": resolved_plan.get("timeline_shots") or None}
         return production, tuple(shots), "\n".join([f"Built deterministic production plan: {len(shots)} shots.", ""] + why)
 
 
@@ -329,7 +611,7 @@ class MartiniShotWritePromptPackage:
         result = MiniMaxH3MusicVideoDirector().direct(
             llm, project["audio"], tuple(shots), subject_description, pronoun, audio_usage, True, True,
             "", "Include", True, temperature, max_tokens, int(seed), max_clip_frames, continuation_overlap,
-            True, 0.0, True, folder_name, False, False, "", "", bool(lip_sync), "English", "small",
+            not production_plan.get("timeline_shots"), 0.0, True, folder_name, False, False, "", "", bool(lip_sync), "English", "small",
             validate_actions=bool(validate_actions),
         )
         prompts, report, responses, folder, _timeline = result
@@ -434,8 +716,10 @@ NODE_CLASS_MAPPINGS = {
     "MartiniShotRenderResolution": MartiniShotRenderResolution,
     "MartiniShotProject": MartiniShotProject,
     "MartiniShotOpenProject": MartiniShotOpenProject,
+    "MartiniShotAnalyzeSong": MartiniShotAnalyzeSong,
     "MartiniShotPlanStory": MartiniShotPlanStory,
     "MartiniShotLoadStoryPlan": MartiniShotLoadStoryPlan,
+    "MartiniShotApplyTimeline": MartiniShotApplyTimeline,
     "MartiniShotResolveLocations": MartiniShotResolveLocations,
     "MartiniShotBuildProductionPlan": MartiniShotBuildProductionPlan,
     "MartiniShotWritePromptPackage": MartiniShotWritePromptPackage,
@@ -449,8 +733,10 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MartiniShotRenderResolution": "Martini Shot Render Resolution",
     "MartiniShotProject": "Martini Shot Project",
     "MartiniShotOpenProject": "Martini Shot Open Project",
+    "MartiniShotAnalyzeSong": "Martini Shot Analyze Song",
     "MartiniShotPlanStory": "Martini Shot Plan Story",
     "MartiniShotLoadStoryPlan": "Martini Shot Load Story Plan",
+    "MartiniShotApplyTimeline": "Martini Shot Apply Timeline",
     "MartiniShotResolveLocations": "Martini Shot Resolve Locations",
     "MartiniShotBuildProductionPlan": "Martini Shot Build Production Plan",
     "MartiniShotWritePromptPackage": "Martini Shot Write Prompt Package",

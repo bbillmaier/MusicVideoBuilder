@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type {
   AssetChangeResult, AssetRole, ClipDetail, ClipRevisionRequest, CreativeDirection, SectionActionImpact, LocationPlaceResult, LocationsOverview, PlanOverview, ProduceOverview, ProjectDetail,
-  ProjectsOverview, RerenderRequest, RerenderResult, ResultsOverview, LivePreviewSession, LivePreviewFrame,
+  ProjectsOverview, RerenderRequest, RerenderResult, ResultsOverview, LivePreviewSession, LivePreviewFrame, SongTimeline, TimelineDraft, TimelineSaveImpact,
 } from "./contracts";
 import type { MachineSettings } from "./db";
 
@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld("martini", {
     open: (projectId: string): Promise<ProjectDetail> => ipcRenderer.invoke("martini:project-open", projectId),
     openFolder: (projectId: string): Promise<void> => ipcRenderer.invoke("martini:project-open-folder", projectId),
     retryComfySave: (projectId: string): Promise<ProjectDetail> => ipcRenderer.invoke("martini:project-retry-comfy", projectId),
+    /** Moves the project folder to the Recycle Bin and removes the project from the app. Returns the refreshed overview. */
+    delete: (projectId: string): Promise<ProjectsOverview> => ipcRenderer.invoke("martini:project-delete", projectId),
     onChanged: (listener: (projectId: string) => void): (() => void) => {
       const handler = (_event: Electron.IpcRendererEvent, projectId: string) => listener(projectId);
       ipcRenderer.on("martini:project-changed", handler);
@@ -44,6 +46,17 @@ contextBridge.exposeInMainWorld("martini", {
     create: (projectId: string): Promise<PlanOverview> => ipcRenderer.invoke("martini:plan-create", projectId),
     /** Starts a deliberate reroll (reset_plan_cache). `confirmed` must be true. */
     reroll: (projectId: string, confirmed: true): Promise<PlanOverview> => ipcRenderer.invoke("martini:plan-reroll", projectId, confirmed),
+    /** Song, beats, sections and shot cuts for the Plan page's song timeline. */
+    timeline: (projectId: string): Promise<SongTimeline> => ipcRenderer.invoke("martini:song-timeline", projectId),
+    /** Starts the no-LLM song analysis in the background; follow it with onChanged. */
+    analyzeSong: (projectId: string): Promise<SongTimeline> => ipcRenderer.invoke("martini:song-analyze", projectId),
+    /** What saving this timeline would rewrite in the current plan. */
+    timelineImpact: (projectId: string, draft: TimelineDraft): Promise<TimelineSaveImpact> => ipcRenderer.invoke("martini:timeline-impact", projectId, draft),
+    /** Forgets edits kept from a failed timeline save. */
+    discardUnsavedTimeline: (projectId: string): Promise<SongTimeline> => ipcRenderer.invoke("martini:timeline-discard-unsaved", projectId),
+    /** Saves the timeline; with a plan it is applied in the background (follow it with onChanged). */
+    saveTimeline: (projectId: string, draft: TimelineDraft, confirmed: boolean): Promise<SongTimeline> =>
+      ipcRenderer.invoke("martini:timeline-save", projectId, draft, confirmed),
     /** Which clips changing a section's action would rewrite and re-render. */
     sectionImpact: (projectId: string, section: number): Promise<SectionActionImpact> => ipcRenderer.invoke("martini:section-action-impact", projectId, section),
     /** Sets a section's action in the plan and, when a prompt package exists, retakes and re-renders its clips. */
@@ -143,5 +156,6 @@ contextBridge.exposeInMainWorld("martini", {
     },
   },
   directorLlmOptions: (): Promise<{ options: string[]; selected: string | null; error: string | null }> => ipcRenderer.invoke("martini:director-llm-options"),
+  renderSamplerOptions: (): Promise<{ samplers: string[]; schedulers: string[]; error: string | null }> => ipcRenderer.invoke("martini:render-sampler-options"),
   openComfyUi: (): Promise<void> => ipcRenderer.invoke("martini:open-comfyui"),
 });

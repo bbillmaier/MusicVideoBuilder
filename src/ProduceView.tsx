@@ -3,6 +3,7 @@ import { formatDuration, formatTime, formatWhen, readableError } from "./Project
 import { elapsed, useTicker } from "./usePlan";
 import { Button, ConfirmDialog, CopyButton, Disclosure, Icon, LoadingPage, NoProject, Notice, PageHeader, PanelHead, Pill, ProgressBar, Switch, ToneMark, cx, type LucideIcon, type Tone } from "./ui";
 import { SectionActionEditor } from "./SectionActionEditor";
+import { usePeaks } from "./useSongPeaks";
 import { CLIP_CAMERAS, type ClipChanges, type ClipMode, type ClipRefRole, type ClipRevisionRequest, type ClipShotSettings } from "../electron/contracts";
 
 type Props = { project: ProjectDetail | null; comfy?: ComfyStatus; onNavigate(view: "Projects" | "Plan" | "Locations" | "Results"): void };
@@ -63,33 +64,6 @@ function useProduce(projectId: string) {
     return () => { offs.forEach((off) => off()); window.removeEventListener("focus", onFocus); };
   }, [projectId, refresh]);
   return { overview, setOverview, error, setError, refresh };
-}
-
-/** Peak bars for the song, decoded locally in the renderer from the project's read-only asset URL. */
-function usePeaks(url: string | null, bars = 220): number[] | null {
-  const [peaks, setPeaks] = useState<number[] | null>(null);
-  useEffect(() => {
-    if (!url) { setPeaks(null); return; }
-    let cancelled = false;
-    (async () => {
-      const buffer = await (await fetch(url)).arrayBuffer();
-      const context = new AudioContext();
-      try {
-        const channel = (await context.decodeAudioData(buffer)).getChannelData(0);
-        const step = Math.max(1, Math.floor(channel.length / bars));
-        const values: number[] = [];
-        for (let bar = 0; bar < bars; bar++) {
-          let peak = 0;
-          for (let i = bar * step; i < Math.min(channel.length, (bar + 1) * step); i += 32) peak = Math.max(peak, Math.abs(channel[i]));
-          values.push(peak);
-        }
-        const max = Math.max(...values, 0.0001);
-        if (!cancelled) setPeaks(values.map((value) => value / max));
-      } finally { void context.close(); }
-    })().catch(() => { if (!cancelled) setPeaks(null); });
-    return () => { cancelled = true; };
-  }, [url, bars]);
-  return peaks;
 }
 
 export function ProduceView({ project, comfy, onNavigate }: Props) {

@@ -10,7 +10,7 @@ import {
   DEFAULT_DIRECTION, DEFAULT_RENDER_STEPS, MAX_SEED, assetFingerprint, cacheEvidence, cachedNodes, chooseDirectorLlm, parseStoryPlan, planFreshness, planInputs,
   planWorkflowValues, previewText, storySignature, validateDirection, carrySectionEdits, setSectionAction, type PlanInputs, type RawStoryPlan,
 } from "./plan-rules";
-import { productionBusy } from "./production-lock";
+import { productionBusy, timelineApplying } from "./production-lock";
 import { ensureComfyProjectSaved, getProject, projectAssetsForPlanning, projectIdentity, suppliedLocationNames } from "./project-service";
 
 type DirectionRow = {
@@ -136,6 +136,7 @@ export async function planOverview(projectId: unknown): Promise<PlanOverview> {
   if (!project.folderExists) blockers.push(`The project folder is missing: ${project.projectPath}.`);
   if (project.missing.length) blockers.push(`Starter assets are incomplete: ${project.missing.join(", ").toLowerCase()}. Add them on Projects.`);
   if (latestRow && (latestRow.status === "queued" || latestRow.status === "running")) blockers.push("A director plan is already being made.");
+  if (timelineApplying.has(project.id)) blockers.push("The song timeline is being applied to the plan. Wait for it to finish.");
   const production = productionBusy();
   if (production?.projectId === project.id) {
     blockers.push(production.kind === "render"
@@ -327,6 +328,30 @@ export async function writeSectionAction(projectId: string, section: number, act
     .run(randomUUID(), project.id, `Section ${section} action edited: "${previous || "(none)"}" → "${plan.sections[section - 1].beat}".`, row.id, now());
   notify(project.id);
   return { previous, plan };
+}
+
+/** Re-reads story_plan.json after a node rewrote it in place (Apply Timeline) and stores it on the current plan run, so
+ *  the Plan page, Locations and the next prompt package all use it. */
+export async function refreshPlanFromFile(projectId: string, report: string): Promise<PlanData> {
+  const project = getProject(projectId);
+  const current = db().prepare("SELECT current_plan_run_id FROM martini_projects WHERE id = ?").get(project.id) as { current_plan_run_id: string | null };
+  const row = runRow(current.current_plan_run_id);
+  if (!row) throw new Error("There is no director plan to update.");
+  const planFile = path.join(project.projectPath, "story_plan.json");
+  let raw: RawStoryPlan;
+  try { raw = JSON.parse(await fs.readFile(planFile, "utf-8")) as RawStoryPlan; }
+  catch (error) { throw new Error(`Could not read ${planFile}: ${error instanceof Error ? error.message : String(error)}`); }
+  const plan = parseStoryPlan(raw, { projectPath: project.projectPath, suppliedLocations: suppliedLocationNames(project.id), report: row.report ?? "" });
+  db().prepare("UPDATE director_runs SET plan_json = ? WHERE id = ?").run(JSON.stringify(plan), row.id);
+  db().prepare("INSERT INTO project_reports (id, project_id, category, body, run_id, created_at) VALUES (?, ?, 'story_plan', ?, ?, ?)")
+    .run(randomUUID(), project.id, report, row.id, now());
+  notify(project.id);
+  return plan;
+}
+
+/** The project's plan seed (fixed until a reroll), for LLM steps that extend the plan. */
+export function planSeed(projectId: string): number {
+  return directionRow(projectId).plan_seed;
 }
 
 /** A specific plan run (e.g. the one a prompt package was written from), with its saved plan and the inputs it was made from. */

@@ -107,7 +107,7 @@ function ViewContent({ view, database, comfy, checking, overview, loadError, onP
 
 /**
  * Saved machine defaults. Only settings that change what Martini Shot actually does are shown: the director LLM and the ComfyUI output
- * folder. Clip rendering uses the packaged render workflow as-is, so its model and sampler values are described, not offered as controls.
+ * folder. Clip rendering uses the packaged render workflow; its sampler, scheduler, and sigma shift are machine settings (steps are per project).
  */
 function Settings({ database, comfy, checking, onRecheck, onOpenComfy }: { database?: DatabaseStatus; comfy?: ComfyStatus; checking: boolean; onRecheck(): void; onOpenComfy(): void }) {
   const [settings, setSettings] = useState<MachineSettings>();
@@ -119,7 +119,9 @@ function Settings({ database, comfy, checking, onRecheck, onOpenComfy }: { datab
     void window.martini.getSettings().then((value) => { setSettings(value); setSavedJson(JSON.stringify(value)); })
       .catch((reason: unknown) => setNotice({ tone: "error", text: readableError(reason) }));
   }, []);
+  const [samplers, setSamplers] = useState<{ samplers: string[]; schedulers: string[]; error: string | null }>();
   useEffect(() => { void window.martini.directorLlmOptions().then(setLlms).catch(() => undefined); }, [comfy?.connected]);
+  useEffect(() => { void window.martini.renderSamplerOptions().then(setSamplers).catch(() => undefined); }, [comfy?.connected]);
   if (!settings) {
     return notice ? <div className="page"><Notice tone="error" title="Settings could not be loaded" live>{notice.text}</Notice></div>
       : <LoadingPage text="Opening the local project database and checking ComfyUI…" />;
@@ -203,8 +205,28 @@ function Settings({ database, comfy, checking, onRecheck, onOpenComfy }: { datab
           <div className="control-text"><b>RAM cleanup between render stages</b><p>Turn off to preserve host-side caches between queued clips. Use the default when memory is constrained.</p></div>
           <Switch checked={settings.ramCleanup} onChange={(ramCleanup) => update("ramCleanup", ramCleanup)} />
         </label>
+        <div className="field-row">
+          <label className="field"><span>Sampler</span>
+            <select className="select" value={settings.renderSampler} onChange={(event) => update("renderSampler", event.target.value)}>
+              {withCurrent(samplers?.samplers, settings.renderSampler).map((option) => <option key={option} value={option}>{option}{option === "euler" ? " (default)" : ""}</option>)}
+            </select>
+          </label>
+          <label className="field"><span>Scheduler</span>
+            <select className="select" value={settings.renderScheduler} onChange={(event) => update("renderScheduler", event.target.value)}>
+              {withCurrent(samplers?.schedulers, settings.renderScheduler).map((option) => <option key={option} value={option}>{option}{option === "simple" ? " (default)" : ""}</option>)}
+            </select>
+          </label>
+        </div>
+        <div className="field-row">
+          <ShiftField label="Sigma shift, video" hint="default 12" value={settings.renderShiftVideo} onChange={(value) => update("renderShiftVideo", value)} />
+          <ShiftField label="Sigma shift, audio" hint="default 3" value={settings.renderShiftAudio} onChange={(value) => update("renderShiftAudio", value)} />
+        </div>
+        {samplers?.error && <Notice tone="warn" title="Samplers could not be listed"><p className="selectable">{samplers.error}</p><p className="muted small">The lists come from the running ComfyUI. The saved choices are kept.</p></Notice>}
+        {samplers && !samplers.error && (!samplers.samplers.includes(settings.renderSampler) || !samplers.schedulers.includes(settings.renderScheduler)) &&
+          <p className="warn-text small">The running ComfyUI does not offer the selected {!samplers.samplers.includes(settings.renderSampler) ? "sampler" : "scheduler"}; clip renders will fail until you pick one it lists.</p>}
+        <p className="muted small">Steps are set per project on Direction. Sampler and scheduler changes apply to the next clip rendered; they do not rewrite prompts.</p>
         <ul className="fixed-list">
-          <li>Clips render with the MiniMax render workflow included in the app (<code>05-render-next-clip.json</code>), using its models, sampler passes, and upscaler.</li>
+          <li>Clips render with the MiniMax render workflow included in the app (<code>05-render-next-clip.json</code>), using its models and one sampling pass with the sampler settings above.</li>
           <li>One clip per ComfyUI run. The next clip is sent only after the prior workflow is complete.</li>
           <li>With VRAM cleanup enabled, Martini Shot asks ComfyUI to unload models and free memory after each workflow.</li>
           <li>The final video joins the rendered clips in order with the original song.</li>
@@ -217,4 +239,19 @@ function Settings({ database, comfy, checking, onRecheck, onOpenComfy }: { datab
 function projectsRootHint(outputDir: string): string {
   const root = outputDir.trim().replace(/[\\/]+$/, "") || "<ComfyUI output>";
   return String.raw`${root}\martini_shot\<project>`;
+}
+
+/** ComfyUI's list for a select, keeping the saved value selectable even when the running ComfyUI does not offer it. */
+function withCurrent(options: string[] | undefined, current: string): string[] {
+  return options?.length ? (options.includes(current) ? options : [current, ...options]) : [current];
+}
+
+/** A sigma shift input (0–100). It keeps what is being typed and only stores a valid number. */
+function ShiftField({ label, hint, value, onChange }: { label: string; hint: string; value: number; onChange(value: number): void }) {
+  const [text, setText] = useState(String(value));
+  useEffect(() => { if (Number(text) !== value) setText(String(value)); }, [value]); // eslint-disable-line react-hooks/exhaustive-deps
+  return <label className="field"><span>{label} <em>({hint})</em></span>
+    <input className="input num" type="number" min={0} max={100} step={0.5} value={text}
+      onChange={(event) => { setText(event.target.value); const next = Number(event.target.value); if (event.target.value !== "" && Number.isFinite(next) && next >= 0 && next <= 100) onChange(next); }} />
+  </label>;
 }

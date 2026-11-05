@@ -29,7 +29,7 @@
     },
     "shift": {
       "class_type": "MiniMaxH3SigmaShift",
-      "inputs": { "model": ["unet", 0], "shift_video": 12.0, "shift_audio": 3.0 }
+      "inputs": { "model": ["unet", 0], "shift_video": "{{renderShiftVideo}}", "shift_audio": "{{renderShiftAudio}}" }
     },
     "live_preview": {
       "class_type": "MartiniShotLivePreview",
@@ -96,11 +96,11 @@
     },
     "sampler": {
       "class_type": "KSamplerSelect",
-      "inputs": { "sampler_name": "euler" }
+      "inputs": { "sampler_name": "{{renderSampler}}" }
     },
     "sigmas_1": {
       "class_type": "BasicScheduler",
-      "inputs": { "model": ["shift", 0], "scheduler": "simple", "steps": "{{render_steps}}", "denoise": 1.0 }
+      "inputs": { "model": ["shift", 0], "scheduler": "{{renderScheduler}}", "steps": "{{render_steps}}", "denoise": 1.0 }
     },
     "guider_1": {
       "class_type": "BasicGuider",

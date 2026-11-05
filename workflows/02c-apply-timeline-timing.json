@@ -1,0 +1,23 @@
+{
+  "name": "02c-apply-timeline-timing.json",
+  "stage": "plan",
+  "description": "Applies the saved song timeline (timeline.json) to the current story plan without the LLM: section timing, roles, and shot cuts change; every story beat is kept. Used by Save timeline when no section needs a new story.",
+  "prompt": {
+    "open": {
+      "class_type": "MartiniShotOpenProject",
+      "inputs": { "project_name": "{{project_name}}" }
+    },
+    "apply": {
+      "class_type": "MartiniShotApplyTimeline",
+      "inputs": {
+        "project": ["open", 0],
+        "section_sources": "{{section_sources}}",
+        "seed": "{{seed}}"
+      }
+    },
+    "report": {
+      "class_type": "PreviewAny",
+      "inputs": { "source": ["apply", 0] }
+    }
+  }
+}

@@ -47,6 +47,33 @@ Plan Story also writes `director_context.json`. This compact, versioned context 
 
 The surreal motif weight is not a Plan Story input. It is saved with the Direction and used later by Write Prompt Package (`recurring_style_motif_weight`).
 
+## 02a-analyze-song.json
+
+Analyzes the song of a project that `01-create-project.json` has saved: beats, bars and song sections, with no LLM. Used by **Analyze song** on Plan, so the song timeline can show sections and the cut preview before a director plan exists.
+
+Graph: `MartiniShotOpenProject` → `MartiniShotAnalyzeSong`, with `PreviewAny` on its report (`report`). The node writes `song_analysis.json` (`version`, `song`, `song_sha256`, `analysis`) in the project folder. A saved file whose `song_sha256` still matches `assets/song.flac` is reused instead of analyzed again.
+
+| Placeholder | Supplied by Electron |
+|---|---|
+| `{{project_name}}` | project slug |
+
+Plan Story reads the same file: when `song_analysis.json` matches the current song, it plans from that analysis (report line `song analysis: reused song_analysis.json` under `Director cache:`), so the plan's sections are the ones the timeline showed. Projects without the file analyze the song inside Plan Story as before.
+
+## 02b-apply-timeline.json and 02c-apply-timeline-timing.json
+
+Apply the user's saved song timeline to the current story plan. Used by **Save timeline** on Plan when a director plan exists. 02b loads the director LLM and is used when sections were split, merged, created or deleted; 02c has no LLM and is used when only timing, roles or shots changed.
+
+Graph: `MartiniShotOpenProject` → `MartiniShotApplyTimeline` (← `MiniMaxH3PromptLLMLoader` in 02b), with `PreviewAny` on its report (`report`). The node rebuilds the plan's song analysis from `timeline.json`, moves each story beat to the section given in `section_sources`, asks the LLM only for the sections listed as `null` (it may not invent new performer locations), and rewrites `story_plan.json` (with `timeline_shots`) and `director_context.json`. If it fails, the app restores the previous `timeline.json`.
+
+| Placeholder | Supplied by Electron |
+|---|---|
+| `{{project_name}}` | project slug |
+| `{{section_sources}}` | JSON list, one entry per timeline section: the plan section number whose story it keeps, or `null` to rewrite |
+| `{{seed}}` | the project's plan seed |
+| `{{director_llm}}` | 02b only; the same choice as Plan Story |
+
+`timeline.json` (written by the app; `version`, `song_sha256`, `duration`, `bpm`, `beats`, `sections`, `shots`) owns all timing once it exists. Plan Story plans on its sections, Build Production Plan uses its cuts exactly (the shot's scene type and transition override the rules where set), and Write Prompt Package turns off beat snapping so clips cut where the user put them. A file made for a different song is ignored. Projects without the file work as before.
+
 ## 03-resolve-locations.json
 
 Re-checks requested performer-location images against the saved story. Used by **Check for images** on the Locations page. It never plans: there is no Plan Story node and no LLM loader in the graph.
@@ -106,7 +133,7 @@ Clip details on Produce (section, location, outfit, action, mode) come from Buil
 
 Renders exactly one clip per ComfyUI execution. Used once per queued clip by the Produce queue.
 
-Graph: `MartiniShotLoadRenderClip` → one 1 MP MiniMax H3 render pass: `UNETLoader` (`singularityV2X10eros_prismPIKA.safetensors`) → `MiniMaxH3SigmaShift` (12 / 3); `CLIPLoader` (`qwen3vl_32b_minimax_h3_int8_convrot.safetensors`, type `minimax`); video/audio `VAELoader`s; `ResolutionSelector` (4:3, 1 MP, multiple 32) → `MiniMaxH3ReferenceToVideo` → `MiniMaxH3AddGuide` → `SamplerCustomAdvanced` (euler, simple, 8 steps) → `VAEDecode` → `MiniMaxH3TrimOverlap` → `CreateVideo` (24 fps, with the clip's audio) → `SaveVideo` (mp4) with the loader's `filename_prefix`. `PreviewAny` returns the loader report. The Electron client calls ComfyUI's `/free` endpoint after each clip.
+Graph: `MartiniShotLoadRenderClip` → one 1 MP MiniMax H3 render pass: `UNETLoader` (`singularityV2X10eros_prismPIKA.safetensors`) → `MiniMaxH3SigmaShift` (`{{renderShiftVideo}}` / `{{renderShiftAudio}}`, default 12 / 3); `CLIPLoader` (`qwen3vl_32b_minimax_h3_int8_convrot.safetensors`, type `minimax`); video/audio `VAELoader`s; `ResolutionSelector` (4:3, 1 MP, multiple 32) → `MiniMaxH3ReferenceToVideo` → `MiniMaxH3AddGuide` → `SamplerCustomAdvanced` (`{{renderSampler}}` / `{{renderScheduler}}`, default euler / simple, from Settings → Rendering; `{{render_steps}}` from the project's Direction, default 8) → `VAEDecode` → `MiniMaxH3TrimOverlap` → `CreateVideo` (24 fps, with the clip's audio) → `SaveVideo` (mp4) with the loader's `filename_prefix`. `PreviewAny` returns the loader report. The Electron client calls ComfyUI's `/free` endpoint after each clip.
 
 Differences from the Step 2 UI workflow, all with no effect on the rendered frames:
 - The two `cleanup` subgraphs are flattened into their `VRAMCleanup` → `RAMCleanup` nodes (API prompts have no subgraphs).

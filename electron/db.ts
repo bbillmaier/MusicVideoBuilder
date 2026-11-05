@@ -14,6 +14,12 @@ export type MachineSettings = {
   /** Render-graph and post-workflow memory cleanup; disabling favors queue throughput over idle memory. */
   vramCleanup: boolean;
   ramCleanup: boolean;
+  /** Clip render sampling (05-render-next-clip.json): KSamplerSelect sampler, BasicScheduler scheduler, and the
+   *  MiniMaxH3SigmaShift video/audio shifts. Steps are per project (Direction). */
+  renderSampler: string;
+  renderScheduler: string;
+  renderShiftVideo: number;
+  renderShiftAudio: number;
   /** The running ComfyUI's output folder. Martini Shot projects live in <this>\martini_shot\<project-slug>. */
   comfyOutputDir: string;
   /** Retained only to safely migrate Ticket 08 settings; projects are always local. */
@@ -38,6 +44,10 @@ const defaults = (): MachineSettings => ({
   livePreviews: false,
   vramCleanup: true,
   ramCleanup: true,
+  renderSampler: "euler",
+  renderScheduler: "simple",
+  renderShiftVideo: 12,
+  renderShiftAudio: 3,
   comfyOutputDir: process.env.COMFYUI_OUTPUT_DIR || String.raw`E:\LTX2-Install\ComfyUI_windows_portable\ComfyUI\output`,
   comfyLocation: "local",
   fileApiToken: "",
@@ -261,12 +271,24 @@ export async function getMachineSettings(): Promise<MachineSettings> {
   const row = database().prepare("SELECT value FROM app_settings WHERE key = 'machine_defaults'").get() as { value?: string } | undefined;
   let saved: Partial<MachineSettings> = {};
   try { saved = row?.value ? JSON.parse(row.value) as Partial<MachineSettings> : {}; } catch { /* A corrupt setting should not prevent the app opening. */ }
-  return { ...defaults(), ...saved };
+  return renderSampling({ ...defaults(), ...saved });
+}
+
+/** Keeps the render sampling settings usable: a blank name or an out-of-range shift falls back to the workflow default. */
+function renderSampling(settings: MachineSettings): MachineSettings {
+  const fallback = defaults();
+  const name = (value: unknown, otherwise: string) => (typeof value === "string" && /^[A-Za-z0-9_.+-]{1,64}$/.test(value.trim()) ? value.trim() : otherwise);
+  const shift = (value: unknown, otherwise: number) => (typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100 ? Math.round(value * 100) / 100 : otherwise);
+  return {
+    ...settings,
+    renderSampler: name(settings.renderSampler, fallback.renderSampler), renderScheduler: name(settings.renderScheduler, fallback.renderScheduler),
+    renderShiftVideo: shift(settings.renderShiftVideo, fallback.renderShiftVideo), renderShiftAudio: shift(settings.renderShiftAudio, fallback.renderShiftAudio),
+  };
 }
 
 export async function saveMachineSettings(value: MachineSettings): Promise<MachineSettings> {
   migrate();
-  const settings = { ...defaults(), ...value };
+  const settings = renderSampling({ ...defaults(), ...value });
   database().prepare(`INSERT INTO app_settings (key, value, updated_at) VALUES ('machine_defaults', ?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`).run(JSON.stringify(settings), new Date().toISOString());
   return settings;

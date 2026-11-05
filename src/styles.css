@@ -347,3 +347,6 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--blue); width: 
 @media (max-width: 1250px) {
   .settings-grid { grid-template-columns: 1fr; }
 }
+
+/* Two fields side by side (Settings → Rendering sampler controls); stacks on narrow windows. */
+.field-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }

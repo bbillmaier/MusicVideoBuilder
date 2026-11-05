@@ -44,13 +44,39 @@ MOTIF: <one recurring visual motif; or none>
 EVENT: <one required one-off event or scene; or none>"""
 
 
+TIMELINE_SHOT_RULES = ("The user cut the song into shots on the timeline; the cuts are fixed and listed under each section. "
+                       "Write each section's beat so it plays across that section's shots, one visible step per shot where "
+                       "it helps. A shot marked with a scene type is filmed as that type whatever the section says; choose "
+                       "the section's scene for its unmarked shots, and use the marked type when every shot in the section "
+                       "has the same one. A shot marked continue or new angle keeps the place and outfit of the shot before it.")
+
+
+def timeline_shot_rows(sections: list[dict[str, Any]], shots: list[dict[str, Any]], duration: float) -> dict[int, str]:
+    """For each section number, a one-line list of the user's fixed shots inside it (time span, and the scene type or
+    transition the user chose, if any), for the story LLM. Shots come from timeline.json: start, scene, transition."""
+    starts = [float(shot["start"]) for shot in shots]
+    ends = starts[1:] + [float(duration)]
+    grouped: dict[int, list[str]] = {}
+    for index, (shot, start, end) in enumerate(zip(shots, starts, ends)):
+        number = next((n for n, section in enumerate(sections, start=1)
+                       if section["start"] - 1e-6 <= start < section["end"] - 1e-6), len(sections))
+        marks = [str(shot["scene"])] if shot.get("scene") else []
+        if index and shot.get("transition"):
+            marks.append(str(shot["transition"]).lower())
+        grouped.setdefault(number, []).append(
+            f"{format_time(start)}-{format_time(end)}" + (f" [{', '.join(marks)}]" if marks else ""))
+    return {number: f"{len(items)} shot{'s' if len(items) != 1 else ''}: " + "; ".join(items)
+            for number, items in grouped.items()}
+
+
 def build_story_message(sections: list[dict[str, Any]], locations: list[str], outfits: list[str],
                         brief: str, lyrics_by_section: dict[int, str], has_subject: bool,
                         actions: dict[str, list[str]] | None = None,
                          descriptions: dict[str, str] | None = None,
                          evidence: dict[str, dict[str, list[str]]] | None = None,
                          story_wheel: bool = False, propose_story_locations: bool = False,
-                         min_locations: int = 0, creative_direction: str = "", dance_style: str = "") -> str:
+                         min_locations: int = 0, creative_direction: str = "", dance_style: str = "",
+                         section_shots: dict[int, str] | None = None) -> str:
     parts = []
     if brief.strip():
         parts.append(f"The story (highest priority): {' '.join(brief.split())}")
@@ -92,7 +118,11 @@ def build_story_message(sections: list[dict[str, Any]], locations: list[str], ou
                f"{section['role']}, {energy} song-relative RMS loudness (not a required movement speed)")
         if lyrics_by_section.get(index):
             row += f'. Lyrics: "{lyrics_by_section[index]}"'
+        if section_shots and section_shots.get(index):
+            row += f". {section_shots[index]}"
         rows.append(row)
+    if section_shots:
+        parts.append(TIMELINE_SHOT_RULES)
     parts.append("Song sections:\n" + "\n".join(rows))
     if story_wheel:
         parts.append("Build a connected Story Wheel. Every section must visibly change the situation: phase names its "

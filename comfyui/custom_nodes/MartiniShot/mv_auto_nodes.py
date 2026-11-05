@@ -633,7 +633,7 @@ class MiniMaxH3AutoDirector:
     @staticmethod
     def _plan_story(llm, analysis, refs, brief, lyrics_story, words, seed, story_wheel=False,
                     propose_story_locations=False, min_locations=0, creative_direction="", cached=None,
-                    dance_style=""):
+                    dance_style="", section_shots=None):
         """One LLM call for per-section story beats. Returns ({} , []) when neither option is on."""
         if not _clean(brief) and not lyrics_story and not story_wheel and not min_locations and not creative_direction:
             return {}, []
@@ -655,7 +655,8 @@ class MiniMaxH3AutoDirector:
                                         if r['kind'] == 'Location' and r.get('description')},
                                        {r['name']: r['location_evidence'] for r in refs
                                         if r['kind'] == 'Location' and r.get('location_evidence')}, story_wheel,
-                                       propose_story_locations, min_locations, creative_direction, dance_style)
+                                       propose_story_locations, min_locations, creative_direction, dance_style,
+                                       section_shots)
         response = cached("Story Wheel" if story_wheel else "story", message, {}, 0.7,
                           max(900, 160 * len(sections) if story_wheel else 100 + 80 * len(sections)), seed, STORY_SYSTEM) \
             if cached else run_llm(llm, message, {}, 0.7, max(900, 160 * len(sections) if story_wheel else 100 + 80 * len(sections)), seed, STORY_SYSTEM)

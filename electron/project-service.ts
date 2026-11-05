@@ -9,7 +9,8 @@ import type {
 import { buildCreateProjectPrompt, createProjectReport, type CreateProjectReference } from "./create-project-workflow";
 import { runWorkflowTemplate, serializeComfyWork } from "./comfy-client";
 import { db, getMachineSettings } from "./db";
-import { projectStorage } from "./project-storage";
+import { productionBusy, timelineApplying } from "./production-lock";
+import { projectStorage, relativeProjectPath } from "./project-storage";
 import {
   ORIGINALS_FOLDER, ROLE_RULES, copyAsset, friendlyName, isInside, missingRequirements,
   statusAfterAssetChange, storedFileName, validateProjectName,
@@ -381,3 +382,40 @@ export function retryComfySync(projectId: unknown): ProjectDetail {
   return getProject(row.id);
 }
 
+
+// ----- Project delete --------------------------------------------------------------------------------------
+
+/** Why this project cannot be deleted right now, or null. Work that is still writing into the folder must finish first. */
+export function projectDeleteBlocker(id: string): string | null {
+  const busy = productionBusy();
+  if (busy?.projectId === id) return `This project is ${busy.kind === "render" ? "rendering clips" : busy.kind === "package" ? "writing a prompt package" : "stitching the final video"}. Stop it or wait for it to finish, then delete it.`;
+  if (timelineApplying.has(id)) return "The song timeline is being applied to the plan. Wait for it to finish, then delete the project.";
+  if (syncState.has(id)) return "The project is being saved through ComfyUI. Wait for it to finish, then delete it.";
+  const run = db().prepare("SELECT stage FROM director_runs WHERE project_id = ? AND status IN ('queued', 'running') LIMIT 1").get(id) as { stage: string } | undefined;
+  if (run) return "A director step (plan, locations, or prompt package) is still running for this project. Wait for it to finish, then delete it.";
+  const final = db().prepare("SELECT id FROM final_results WHERE project_id = ? AND status IN ('queued', 'running') LIMIT 1").get(id);
+  if (final) return "The final video is being stitched. Wait for it to finish, then delete the project.";
+  return null;
+}
+
+/** The folder to move to the Recycle Bin, or null when it is already gone. Only a Martini Shot project folder qualifies:
+ *  one inside the projects folder, or (after the ComfyUI output folder changed in Settings) a folder named after the project
+ *  that holds its assets folder. Anything else is refused rather than deleted. */
+export async function projectDeleteTarget(rawId: unknown): Promise<{ id: string; name: string; folder: string | null }> {
+  const row = projectRow(rawId);
+  const blocker = projectDeleteBlocker(row.id);
+  if (blocker) throw new Error(blocker);
+  const settings = await getMachineSettings();
+  const root = path.join(settings.comfyOutputDir, "martini_shot");
+  const folder = path.isAbsolute(row.project_path) ? path.resolve(row.project_path) : (() => { try { return path.join(root, ...relativeProjectPath(row.project_path).split("/")); } catch { return null; } })();
+  if (!folder || !existsSync(folder)) return { id: row.id, name: row.name, folder: null };
+  const ours = isInside(root, folder) || (path.basename(folder) === row.slug && existsSync(path.join(folder, "assets")));
+  if (!ours) throw new Error(`${folder} does not look like a Martini Shot project folder, so it was not deleted. Delete it yourself if you no longer need it.`);
+  return { id: row.id, name: row.name, folder };
+}
+
+/** Removes the project and everything recorded about it (assets, plans, renders, reports) from the local database. */
+export function forgetProject(id: string): void {
+  db().prepare("DELETE FROM martini_projects WHERE id = ?").run(id);
+  notify(id);
+}

@@ -11,6 +11,7 @@ import "./tokens.css";
 import "./styles.css";
 import "./projects.css";
 import "./plan.css";
+import "./timeline.css";
 import "./locations.css";
 import "./produce.css";
 import "./results.css";

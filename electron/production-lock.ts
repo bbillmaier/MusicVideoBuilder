@@ -20,3 +20,7 @@ export function claimProduction(kind: ProductionBusy["kind"], projectId: string)
   busy = claim;
   return () => { if (busy === claim) busy = null; };
 }
+
+/** Projects whose saved song timeline is being applied to the story plan (Save timeline). Planning and package writing
+ *  wait for it: both read story_plan.json, which the apply rewrites. */
+export const timelineApplying = new Set<string>();

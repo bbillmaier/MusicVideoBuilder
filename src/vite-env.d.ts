@@ -13,6 +13,8 @@ import type {
   ResultsOverview as SharedResultsOverview, FinalVideo as SharedFinalVideo, DirectorReport as SharedDirectorReport, ReportSection as SharedReportSection,
   RerenderRequest as SharedRerenderRequest, RerenderResult as SharedRerenderResult, FinalState as SharedFinalState,
   ClipRevisionRequest as SharedClipRevisionRequest, LivePreviewFrame as SharedLivePreviewFrame, SectionActionImpact as SharedSectionActionImpact,
+  SongTimeline as SharedSongTimeline, SongTimelineSection as SharedSongTimelineSection, SongTimelineShot as SharedSongTimelineShot, TimelineScene as SharedTimelineScene,
+  TimelineDraft as SharedTimelineDraft, TimelineSaveImpact as SharedTimelineSaveImpact, TimelineTransition as SharedTimelineTransition,
 } from "../electron/contracts";
 
 declare global {
@@ -29,6 +31,7 @@ declare global {
     lora: string; loraStrength: number; steps: number; cfg: number; seedMode: "random" | "fixed";
     resolution: string; fps: number; outputFormat: string; dynamicLength: boolean; higherQuality: boolean;
     keepIntermediateOutputs: boolean; livePreviews: boolean; vramCleanup: boolean; ramCleanup: boolean; comfyOutputDir: string;
+    renderSampler: string; renderScheduler: string; renderShiftVideo: number; renderShiftAudio: number;
     executionDestination: "local" | "remote"; remoteComfyUrl: string; remoteFileApiToken: string;
   };
 
@@ -64,6 +67,13 @@ declare global {
   type PromptPackage = SharedPromptPackage;
   type PackageRun = SharedPackageRun;
   type TimelineSection = SharedTimelineSection;
+  type SongTimeline = SharedSongTimeline;
+  type SongTimelineSection = SharedSongTimelineSection;
+  type SongTimelineShot = SharedSongTimelineShot;
+  type TimelineScene = SharedTimelineScene;
+  type TimelineDraft = SharedTimelineDraft;
+  type TimelineSaveImpact = SharedTimelineSaveImpact;
+  type TimelineTransition = SharedTimelineTransition;
   type ProduceEvent = SharedProduceEvent;
   type ResultsOverview = SharedResultsOverview;
   type FinalVideo = SharedFinalVideo;
@@ -90,6 +100,7 @@ declare global {
         open(projectId: string): Promise<ProjectDetail>;
         openFolder(projectId: string): Promise<void>;
         retryComfySave(projectId: string): Promise<ProjectDetail>;
+        delete(projectId: string): Promise<ProjectsOverview>;
         onChanged(listener: (projectId: string) => void): () => void;
       };
       assets: {
@@ -103,6 +114,11 @@ declare global {
         saveDirection(projectId: string, direction: CreativeDirection): Promise<PlanOverview>;
         create(projectId: string): Promise<PlanOverview>;
         reroll(projectId: string, confirmed: true): Promise<PlanOverview>;
+        timeline(projectId: string): Promise<SongTimeline>;
+        analyzeSong(projectId: string): Promise<SongTimeline>;
+        timelineImpact(projectId: string, draft: TimelineDraft): Promise<TimelineSaveImpact>;
+        saveTimeline(projectId: string, draft: TimelineDraft, confirmed: boolean): Promise<SongTimeline>;
+        discardUnsavedTimeline(projectId: string): Promise<SongTimeline>;
         sectionImpact(projectId: string, section: number): Promise<SharedSectionActionImpact>;
         editSectionAction(projectId: string, section: number, action: string, confirmed: boolean): Promise<ProduceOverview>;
         onChanged(listener: (projectId: string) => void): () => void;
@@ -147,6 +163,7 @@ declare global {
         onChanged(listener: (projectId: string) => void): () => void;
       };
       directorLlmOptions(): Promise<{ options: string[]; selected: string | null; error: string | null }>;
+      renderSamplerOptions(): Promise<{ samplers: string[]; schedulers: string[]; error: string | null }>;
       openComfyUi(): Promise<void>;
     };
   }

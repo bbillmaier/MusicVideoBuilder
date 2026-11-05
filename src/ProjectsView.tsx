@@ -64,6 +64,7 @@ type Props = {
 
 export function ProjectsView({ overview, loadError, onChanged, onNavigate }: Props) {
   const [creating, setCreating] = useState(false);
+  const [deleting, setDeleting] = useState<ProjectSummary | null>(null);
   const [notice, setNotice] = useState<{ tone: "error" | "info"; text: string; issues?: AssetChangeResult["issues"] }>();
   const active = overview?.active ?? null;
   const showCreate = creating || !active;
@@ -101,8 +102,15 @@ export function ProjectsView({ overview, loadError, onChanged, onNavigate }: Pro
           <ProjectOverview project={active} run={run} onAssetResult={assetResult} onChanged={onChanged} onNavigate={onNavigate} />
           <NextSteps project={active} />
         </div>}
-    <RecentProjects projects={overview.recent} activeId={active?.id} onNew={() => setCreating(true)}
+    <RecentProjects projects={overview.recent} activeId={active?.id} onNew={() => setCreating(true)} onDelete={setDeleting}
       onOpen={(id) => run(() => window.martini.projects.open(id), (project) => { setCreating(false); onChanged(project); })} />
+    {deleting && <ConfirmDialog title={`Delete "${deleting.name}"?`} icon={Icon.remove} tone="danger" confirmLabel="Delete project" confirmIcon={Icon.remove}
+      cancelLabel="Keep it" onCancel={() => setDeleting(null)}
+      onConfirm={() => { const project = deleting; setDeleting(null); void run(() => window.martini.projects.delete(project.id), () => { setNotice({ tone: "info", text: `"${project.name}" was deleted. Its folder is in the Recycle Bin if you need the files back.` }); onChanged(); }); }}>
+      <p>The project folder moves to the Recycle Bin: the song and image copies, the director plan, prompt packages, rendered clips, and the final video.</p>
+      <p className="muted">The project is also removed from Martini Shot, including its plan history and render records. Restoring the folder from the Recycle Bin brings the files back, not the project list entry. Your original files are not touched.</p>
+      {deleting.id === active?.id && <p className="muted">This is the open project. The most recently opened remaining project opens instead.</p>}
+    </ConfirmDialog>}
   </div>;
 }
 
@@ -363,7 +371,7 @@ function NextSteps({ project }: { project: ProjectDetail }) {
   </aside>;
 }
 
-function RecentProjects({ projects, activeId, onOpen, onNew }: { projects: ProjectSummary[]; activeId?: string; onOpen(id: string): void; onNew(): void }) {
+function RecentProjects({ projects, activeId, onOpen, onNew, onDelete }: { projects: ProjectSummary[]; activeId?: string; onOpen(id: string): void; onNew(): void; onDelete(project: ProjectSummary): void }) {
   return <section className="panel recent">
     <PanelHead title="Recent projects" count={projects.length} aside={<Button variant="quiet" size="sm" icon={Icon.add} onClick={onNew}>New project</Button>} />
     {!projects.length ? <p className="muted">No projects yet. Create one above to get started.</p> : <table className="data-table">
@@ -375,8 +383,9 @@ function RecentProjects({ projects, activeId, onOpen, onNew }: { projects: Proje
         <td className="num">{formatDuration(project.songDurationSeconds)}</td>
         <td className="muted small">{project.counts.song ? "Song" : "No song"} · {project.counts.performer} performer · {project.counts.outfit} outfit · {project.counts.location} location</td>
         <td>{project.folderExists ? <ProjectStatus status={project.status} /> : <Pill tone="error" icon={Icon.imageMissing}>Folder missing</Pill>}</td>
-        <td className="cell-action">{project.id === activeId ? <span className="muted small">Open now</span>
-          : <Button variant="secondary" size="sm" icon={Icon.openFolder} disabled={!project.folderExists} onClick={() => onOpen(project.id)} aria-label={`Open ${project.name}`}>Open</Button>}</td>
+        <td className="cell-action"><div className="row-actions">{project.id === activeId ? <span className="muted small">Open now</span>
+          : <Button variant="secondary" size="sm" icon={Icon.openFolder} disabled={!project.folderExists} onClick={() => onOpen(project.id)} aria-label={`Open ${project.name}`}>Open</Button>}
+          <IconButton icon={Icon.remove} size="sm" tip="end" label={`Delete ${project.name}`} onClick={() => onDelete(project)} /></div></td>
       </tr>)}</tbody>
     </table>}
   </section>;

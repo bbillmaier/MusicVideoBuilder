@@ -217,11 +217,14 @@ def plan_auto_shots(analysis: dict[str, Any], refs: list[dict[str, Any]], *, see
                     location_details: dict[str, dict[str, Any]] | None = None,
                     broll_invented_chance: float = 0.0,
                     selected_actions: dict[int, dict[str, str]] | None = None,
-                    require_performer_location_image: bool = False) -> tuple[list[dict[str, Any]], list[str]]:
+                    require_performer_location_image: bool = False,
+                    fixed_shots: list[dict[str, Any]] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
     """Shot dicts in Music Video Shot format, plus a 'why' line per shot.
 
     story: optional {section number: {scene, location, beat}} from the story planner; it overrides the rules for
     location, scene type, and description wherever it is valid.
+    fixed_shots: optional [{start, scene, transition}] from the user's song timeline. Its cuts replace the timing rules
+    (every section start must be one), and a shot's scene or transition, when set, overrides everything else.
     """
     rng = random.Random(seed)
     # story_plan.json stores section numbers as JSON object keys, which become strings on reload.
@@ -270,6 +273,7 @@ def plan_auto_shots(analysis: dict[str, Any], refs: list[dict[str, Any]], *, see
             rng.shuffle(queue)
         return queue.pop()
 
+    fixed_lookup = {round(float(shot["start"]), 3): shot for shot in (fixed_shots or ())}
     for index, section in enumerate(split_at_forced_cuts(analysis["sections"], beats, forced_cuts or [])):
         role = section["role"]
         new_section = section["orig"] != previous_original
@@ -307,7 +311,11 @@ def plan_auto_shots(analysis: dict[str, Any], refs: list[dict[str, Any]], *, see
         if new_section and (subject is None or (len(subjects) > 1 and rng.random() < 0.5)):
             subject = _pick(rng, subjects, role, avoid=subject)
 
-        starts = _cut_points(section, beats, target_shot_seconds, min_shot_seconds, cut_rate_vs_energy, max_shot_seconds)
+        if fixed_shots is not None:
+            starts = [float(shot["start"]) for shot in fixed_shots
+                      if section["start"] - 1e-3 <= float(shot["start"]) < section["end"] - 1e-3] or [section["start"]]
+        else:
+            starts = _cut_points(section, beats, target_shot_seconds, min_shot_seconds, cut_rate_vs_energy, max_shot_seconds)
         for k, start in enumerate(starts):
             # EXPERIMENTAL lyric triggers: a sung phrase in this shot's window switches to its reference for the
             # rest of the section; a switch mid-section is a hard cut
@@ -342,6 +350,11 @@ def plan_auto_shots(analysis: dict[str, Any], refs: list[dict[str, Any]], *, see
                 scene = active_beat["scene"]
             if location_triggered and location.get("broll_only"):
                 scene = "B-roll"
+            user_shot = fixed_lookup.get(round(start, 3), {}) if fixed_shots is not None else {}
+            if user_shot.get("scene"):
+                scene = user_shot["scene"]  # the user's choice on the timeline wins over the story and the rules
+                insert = k > 0 and scene == "B-roll"
+                active_beat = beat if not location_triggered or location is story_location else {}
             if not subjects and scene != "B-roll":
                 scene = "B-roll"
                 active_beat = {}
@@ -385,6 +398,13 @@ def plan_auto_shots(analysis: dict[str, Any], refs: list[dict[str, Any]], *, see
                         # a forced cut must stay visible, so it takes a new angle even without a location image
                         held = transition = ("New angle" if location.get("image") is not None
                                              or (k == 0 and section.get("forced")) else "Continue")
+            if user_shot.get("transition") and shots:
+                transition = user_shot["transition"]
+                if (transition in ("Continue", "New angle") and scene != "B-roll" and shots[-1]["scene_type"] != "B-roll"
+                        and last_main_location is not None):
+                    # the user joined this shot to the previous one: it stays in the same set with the same person
+                    location, outfit, subject = last_main_location, last_outfit, last_subject
+                    refs_now = (id(location), id(outfit), id(subject), scene)
             last_outfit, last_subject = outfit, subject
             if not insert:
                 last_main_location = location

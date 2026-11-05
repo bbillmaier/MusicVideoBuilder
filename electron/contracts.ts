@@ -633,3 +633,82 @@ export type ResultsOverview = {
 
 export type RerenderRequest = { scope: "all" } | { scope: "clips"; clips: string };
 export type RerenderResult = { produce: ProduceOverview; clips: number[]; addedForContinuity: number[]; archivedTo: string; queueError: string | null };
+
+// ----- Song timeline (Plan) ----------------------------------------------------------------------------------
+
+export type TimelineScene = Exclude<ClipMode, "">;
+export const TIMELINE_SCENES: readonly TimelineScene[] = ["Dance", "Performance", "Freeform", "B-roll"];
+export const TIMELINE_TRANSITIONS = ["Hard cut", "New angle", "Continue"] as const;
+export type TimelineTransition = typeof TIMELINE_TRANSITIONS[number];
+export const TIMELINE_ROLES = ["intro", "verse", "pre-chorus", "chorus", "post-chorus", "bridge", "break", "outro"] as const;
+
+export type SongTimelineSection = {
+  number: number;
+  start: number;
+  end: number;
+  /** Repeat label (A, B…) and the analyzer's role guess (verse, chorus…). */
+  label: string;
+  role: string;
+  /** 0–1 loudness relative to the song; drives shorter shots in hotter sections. */
+  energy: number;
+  /** Raw RMS loudness from the analysis, carried through edits for the planner. */
+  loudness: number;
+  /** The director plan section whose story this section holds, or null (no plan, or a split/merged section). */
+  origin: number | null;
+  /** From the director plan; null before a plan exists. */
+  scene: TimelineScene | null;
+  action: string | null;
+  phase: StoryPhase | null;
+};
+
+export type SongTimelineShot = {
+  /** 1-based, in song order. */
+  number: number;
+  start: number;
+  end: number;
+  section: number;
+  /** Known for package clips and for sections the plan gave a scene type; null when the director decides later. */
+  scene: TimelineScene | null;
+  /** "Hard cut" | "New angle" | "Continue" for package clips; null in the preview (the director decides). */
+  transition: string | null;
+  /** Package only: the clips this shot was split into (long shots become several render clips). */
+  clips: { index: number; start: number; end: number; status: ClipStatus }[];
+  /** The user's own choices on the timeline (null = Auto: the plan and rules decide). */
+  override: { scene: TimelineScene | null; transition: TimelineTransition | null };
+};
+
+/** An edited timeline sent from the renderer. Times are song seconds; every section start is also a shot start. */
+export type TimelineDraft = {
+  sections: { start: number; end: number; role: string; label: string; energy: number; loudness: number; origin: number | null }[];
+  shots: { start: number; scene: TimelineScene | null; transition: TimelineTransition | null }[];
+};
+
+/** What saving a draft does to the current plan: sections whose story the LLM rewrites (new numbering). */
+export type TimelineSaveImpact = { rewrite: number[]; usesLlm: boolean; planExists: boolean };
+
+export type SongTimeline = {
+  projectId: string;
+  /** martini-asset URL of the project's song, or null when it has none or the copy is missing. */
+  songUrl: string | null;
+  duration: number;
+  bpm: number | null;
+  /** Beat times in seconds; every fourth one, from the first, is a bar line. */
+  beats: number[];
+  sections: SongTimelineSection[];
+  shots: SongTimelineShot[];
+  /** plan: story_plan.json; song: song_analysis.json (no plan yet); none: the song has not been analyzed. */
+  analysisSource: "plan" | "song" | "none";
+  /** package: the current prompt package's clips; timeline: the saved timeline.json; preview: cuts from the Direction
+   *  timing settings; none: no analysis. */
+  shotSource: "package" | "timeline" | "preview" | "none";
+  /** The plan's own sections (plan numbering), so an edited draft can show each section's planned scene and action. */
+  planSections: { number: number; scene: TimelineScene | null; action: string | null }[];
+  /** Direction's timing settings: automatic cuts, and the minimum shot length below which a shot gets a warning. */
+  cutSettings: { targetShotSeconds: number; minShotSeconds: number; maxShotSeconds: number; cutRateVsEnergy: number };
+  edit: { allowed: boolean; reason: string | null; applying: boolean; error: string | null };
+  /** Edits from a save that failed (kept in timeline.unsaved.json), so they can be restored into the editor. */
+  unsaved: { draft: TimelineDraft; savedAt: string } | null;
+  /** Plain-language notes on what the timeline shows (stale package, preview limits, missing analysis…). */
+  notes: string[];
+  analysis: { running: boolean; error: string | null; canStart: boolean; blocker: string | null };
+};

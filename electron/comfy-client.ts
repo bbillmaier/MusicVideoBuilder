@@ -278,6 +278,16 @@ export async function nodeInputOptions(classType: string, input: string): Promis
   return Array.isArray(spec?.[0]) ? (spec[0] as unknown[]).map(String) : [];
 }
 
+/** The samplers and schedulers the running ComfyUI (local or remote, per Settings) offers for clip renders. */
+export async function renderSamplerOptions(): Promise<{ samplers: string[]; schedulers: string[]; error: string | null }> {
+  try {
+    const [samplers, schedulers] = await Promise.all([nodeInputOptions("KSamplerSelect", "sampler_name"), nodeInputOptions("BasicScheduler", "scheduler")]);
+    return { samplers, schedulers, error: null };
+  } catch (error) {
+    return { samplers: [], schedulers: [], error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 function vramFree(stats: unknown): number | null {
   const devices = (stats as { devices?: Array<{ vram_free?: unknown }> } | null)?.devices;
   const value = Array.isArray(devices) ? devices[0]?.vram_free : undefined;

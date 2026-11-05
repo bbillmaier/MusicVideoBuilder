@@ -24,7 +24,7 @@ import { locationsOverview } from "./location-service";
 import { storyFileHash } from "./location-rules";
 import { previewText, storySignature, parseStoryPlan, reportBlock, type RawStoryPlan } from "./plan-rules";
 import { directorLlmOptions, planOverview, renderSteps, writeSectionAction } from "./plan-service";
-import { claimProduction, productionBusy } from "./production-lock";
+import { claimProduction, productionBusy, timelineApplying } from "./production-lock";
 import {
   FIXED_INDEX, MAX_NOISE_SEED, NEXT_MISSING, RENDER_NAME, actionValidation, clipMetadata, estimateRemaining, findVideo, parseLoaderReport,
   parseManifest, parsePackageReport, parseProductionReport, queueTarget, readableProductionError, savedVideo, validateClipIndex,
@@ -325,6 +325,7 @@ export async function produceOverview(projectId: unknown): Promise<ProduceOvervi
   if (latestRow && (latestRow.status === "queued" || latestRow.status === "running")) packageBlockers.push("A prompt package is being written.");
   if (busy?.kind === "render") packageBlockers.push(busy.projectId === project.id ? "Clips are rendering. Use Stop after current clip and wait for it to finish first." : "Another project is rendering.");
   if (busy?.kind === "stitch") packageBlockers.push("A final video is being stitched. Wait for it to finish.");
+  if (timelineApplying.has(project.id)) packageBlockers.push("The song timeline is being applied to the plan. Wait for it to finish.");
   const latestFailed = latestRow && (latestRow.status === "failed" || latestRow.status === "interrupted") && latestRow.id !== currentRow?.id;
   const canWritePackage = !packageBlockers.length && (!pkg || packageStale.length > 0 || packageNotes.length > 0 || Boolean(latestFailed));
 

@@ -1,0 +1,19 @@
+{
+  "name": "02a-analyze-song.json",
+  "stage": "analyze",
+  "description": "Analyzes a saved Martini Shot project's song (beats, bars, sections) without the LLM and writes song_analysis.json. Used by the song timeline on Plan before a director plan exists.",
+  "prompt": {
+    "open": {
+      "class_type": "MartiniShotOpenProject",
+      "inputs": { "project_name": "{{project_name}}" }
+    },
+    "analyze": {
+      "class_type": "MartiniShotAnalyzeSong",
+      "inputs": { "project": ["open", 0] }
+    },
+    "report": {
+      "class_type": "PreviewAny",
+      "inputs": { "source": ["analyze", 0] }
+    }
+  }
+}

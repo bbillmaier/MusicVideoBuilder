@@ -1,6 +1,20 @@
-# Martini Shot remote render worker
+# Martini Shot: turn your song into a music video
 
-A remote ComfyUI worker for **Martini Shot**. Projects remain on the local PC; the selected worker may run planning, package writing, rendering, results, or stitching through a hash-checked local mirror.
+**Martini Shot** is a desktop app that turns your music, performer reference images, and creative direction into an AI-generated music video. Its AI director plans a story around your song, writes the shot prompts, and helps take the project through rendered clips to a finished video with your music.
+
+## How you use Martini Shot
+
+1. **Bring your music and look.** Add a song and performer image, plus outfit or location references to guide the visuals.
+2. **Set the direction.** Describe the mood, story, or visual style you have in mind, or let the director take the lead.
+3. **Shape the video.** Generate a story plan, adjust the song timeline, and supply any additional location images the plan requests.
+4. **Create and refine.** Generate the clips, inspect the results, and re-render shots you want to change.
+5. **Finish your video.** Assemble the clips with your song, play the result, and open the finished video file from the app.
+
+Your projects and final videos stay on your computer. This RunPod template supplies the cloud GPU worker that runs the AI work, so you can use remote computing power from the desktop app. Files needed for that work are uploaded to the worker, and generated results are downloaded back to your project.
+
+## Technical setup: the remote worker
+
+This template installs the ComfyUI worker used by the Martini Shot desktop app; install and run the desktop app separately on your PC. The selected worker can run planning, prompt writing, rendering, and stitching through a hash-checked mirror of your local project.
 
 On first start the pod installs:
 - ComfyUI
@@ -28,7 +42,7 @@ The ComfyUI address looks like `https://<pod-id>-8188.proxy.runpod.net`.
 
 ## Connect Martini Shot
 
-In Martini Shot Settings enable **Remote clip rendering**, use that address as the endpoint,
+In Martini Shot Settings choose **Remote ComfyUI worker** under **Workflow destination**, use that address as the endpoint,
 and enter `MARTINI_SHOT_TOKEN`. Set it to a long random RunPod secret before deploying.
 Martini Shot hash-syncs the local project before remote work and downloads changed
 artifacts back into that local project when it finishes. Switch the workflow destination
