@@ -135,6 +135,8 @@ The script checks every download against its known size, so a partial file is re
 | `COMFYUI_REF` | the tested commit | `master` for the latest ComfyUI |
 | `COMFYUI_ARGS` | | extra ComfyUI flags, e.g. `--reserve-vram 2` |
 | `TORCH_INDEX_URL` | PyTorch cu128 | wheel index used when the venv has no torch |
+| `SAGE_ATTENTION` | `1` | builds SageAttention 2 for the pod's GPU on the first start (about 10 min, cached in `/workspace/wheels`), falls back to SageAttention 1, and starts ComfyUI with `--use-sage-attention` only if it works. `0` turns it off |
+| `SAGE_REF` | `main` | SageAttention branch, tag, or commit to build |
 | `SKIP_MODELS` | `0` | `1` skips all model downloads |
 | `SKIP_START` | `0` | `1` sets everything up without starting ComfyUI |
 | `RUNPOD_SERVICES` | `1` | also runs the image's `/start.sh` (SSH, Jupyter) |

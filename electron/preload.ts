@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type {
   AssetChangeResult, AssetRole, ClipDetail, ClipRevisionRequest, CreativeDirection, LocationPlaceResult, LocationsOverview, PlanOverview, ProduceOverview, ProjectDetail,
-  ProjectsOverview, RerenderRequest, RerenderResult, ResultsOverview, LivePreviewSession,
+  ProjectsOverview, RerenderRequest, RerenderResult, ResultsOverview, LivePreviewSession, LivePreviewFrame,
 } from "./contracts";
 import type { MachineSettings } from "./db";
 
@@ -100,6 +100,12 @@ contextBridge.exposeInMainWorld("martini", {
     openFolder: (projectId: string): Promise<void> => ipcRenderer.invoke("martini:produce-open-folder", projectId),
     copyOutputPath: (projectId: string, clipIndex: number): Promise<string> => ipcRenderer.invoke("martini:produce-copy-output", projectId, clipIndex),
     previewSession: (): Promise<LivePreviewSession> => ipcRenderer.invoke("martini:produce-preview-session"),
+    /** Live sampler previews for the clip rendering now, relayed by main from ComfyUI's WebSocket. */
+    onPreviewFrame: (listener: (frame: LivePreviewFrame) => void): (() => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, frame: LivePreviewFrame) => listener(frame);
+      ipcRenderer.on("martini:preview-frame", handler);
+      return () => ipcRenderer.removeListener("martini:preview-frame", handler);
+    },
     onPreviewSession: (listener: (session: LivePreviewSession) => void): (() => void) => {
       const handler = (_event: Electron.IpcRendererEvent, session: LivePreviewSession) => listener(session);
       ipcRenderer.on("martini:preview-session", handler);

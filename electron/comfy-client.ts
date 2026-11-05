@@ -6,7 +6,66 @@ import { applyTemplateValues, loadWorkflowTemplate, type WorkflowTemplate } from
 export type ComfyStatus = { connected: boolean; endpoint: string; message: string; system?: unknown };
 /** `messages` is ComfyUI's history status message list (execution_start, execution_cached, …) for evidence checks. */
 export type WorkflowRun = { job: ComfyJob; outputs: unknown; messages: unknown[]; cleanup: CleanupEvidence };
-export type WorkflowProgress = { phase: "queued" | "running" | "cleanup"; queuePosition?: number };
+export type WorkflowProgress = { phase: "queued" | "running" | "cleanup"; queuePosition?: number; step?: StepProgress };
+/** What ComfyUI's WebSocket says it is doing: the executing node and, for nodes that report it, step x of y. */
+export type StepProgress = { node: string; label: string; value: number | null; max: number | null };
+/** One live sampler preview from Martini Shot's preview node (base64 image data). */
+export type PreviewFrame = { image: string; mime: string; step: number; total: number; frames: number };
+
+/** Plain-language names for the nodes a Martini Shot workflow spends its time in. */
+function nodeLabel(classType: string, title?: string): string {
+  if (/LoadRenderClip/.test(classType)) return "Loading the clip and references";
+  if (/Revise|PromptPackage|Director/.test(classType)) return "Writing prompts with the LLM";
+  if (/Cleanup|Clean|RAMClean|VRAM/i.test(classType)) return "Freeing memory";
+  if (/Loader|Load(?!.*Clip)/.test(classType)) return "Loading models";
+  if (/TextEncode|Encode(?!.*VAE)/i.test(classType)) return "Encoding the prompt";
+  if (/Sampler|KSampler/.test(classType)) return "Sampling";
+  if (/VAEDecode|Decode/.test(classType)) return "Decoding frames";
+  if (/Upscale/i.test(classType)) return "Upscaling";
+  if (/SaveVideo|CreateVideo|VHS_VideoCombine/.test(classType)) return "Saving the video";
+  return title || classType.replace(/([a-z])([A-Z])/g, "$1 $2");
+}
+
+/** Listens on ComfyUI's /ws for one client ID. ComfyUI sends `executing` and `progress` events only to the client that
+ *  submitted the prompt, so this works the same for the local install and a remote worker. Best effort: if the socket
+ *  cannot connect (old runtime, a proxy without WebSocket support), the caller keeps its /queue polling. */
+function watchSteps(endpoint: string, clientId: string, prompt: Record<string, unknown>, onStep: (step: StepProgress) => void,
+  onPreview?: (frame: PreviewFrame) => void): () => void {
+  const Socket = (globalThis as { WebSocket?: typeof WebSocket }).WebSocket;
+  if (!Socket) return () => undefined;
+  const url = new URL(endpoint);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.pathname = `${url.pathname.replace(/\/$/, "")}/ws`;
+  url.search = `clientId=${encodeURIComponent(clientId)}`;
+  let socket: WebSocket;
+  try { socket = new Socket(url); } catch { return () => undefined; }
+  const label = (node: string) => {
+    const entry = prompt[node] as { class_type?: string; _meta?: { title?: string } } | undefined;
+    return entry?.class_type ? nodeLabel(entry.class_type, entry._meta?.title) : `Node ${node}`;
+  };
+  let node = "";
+  socket.onmessage = (event: MessageEvent) => {
+    if (typeof event.data !== "string") return; // binary frames are ComfyUI's own image previews
+    try {
+      const packet = JSON.parse(event.data) as { type?: string; data?: { node?: unknown; value?: unknown; max?: unknown; image?: unknown; mime?: unknown; step?: unknown; total?: unknown; frames?: unknown } };
+      const data = packet.data ?? {};
+      if (packet.type === "martini_preview") {
+        // Martini Shot's live-preview node: a sampler preview image with its step
+        if (typeof data.image === "string" && typeof data.mime === "string" && /^image\/(jpeg|webp|png)$/.test(data.mime)) {
+          onPreview?.({ image: data.image, mime: data.mime, step: Number(data.step) || 0, total: Number(data.total) || 0, frames: Number(data.frames) || 1 });
+        }
+      } else if (packet.type === "executing" && typeof data.node === "string") {
+        node = data.node;
+        onStep({ node, label: label(node), value: null, max: null });
+      } else if (packet.type === "progress" && Number.isFinite(Number(data.value)) && Number(data.max) > 0) {
+        if (typeof data.node === "string") node = data.node;
+        onStep({ node, label: label(node), value: Number(data.value), max: Number(data.max) });
+      }
+    } catch { /* not a JSON status event */ }
+  };
+  socket.onerror = () => undefined;
+  return () => { try { socket.close(); } catch { /* already closed */ } };
+}
 /** What Martini Shot actually observed about a POST /free cleanup. It never proves memory was physically released. */
 export type CleanupEvidence = {
   status: "accepted" | "completed" | "failed" | "skipped";
@@ -31,6 +90,8 @@ export type WorkflowOptions = {
   waitWhileQueued?: boolean;
   /** ComfyUI WebSocket client that receives live preview events for this one workflow. */
   clientId?: string;
+  /** Live sampler previews from Martini Shot's preview node, relayed from this run's WebSocket. */
+  onPreview?(frame: PreviewFrame): void;
   /** Explicit worker selection. Omitted always means the configured local ComfyUI. */
   endpoint?: string;
 };
@@ -291,13 +352,22 @@ export async function runWorkflowTemplate(isDevelopment: boolean, name: string, 
     options.onCleanup?.(evidence);
   };
   let result: { outputs: unknown; messages: unknown[] };
+  let stopWatching = () => undefined as void;
   try {
     const prompt = build ? build(template) : applyTemplateValues(template.prompt, { ...settings, ...values }) as Record<string, unknown>;
     await checkNodeTypes(endpoint, prompt);
-    promptId = await submitPrompt(endpoint, prompt, options.clientId);
+    // One client ID per run: it receives this prompt's step events (and, for renders, the live previews).
+    const clientId = options.clientId || randomUUID();
+    // This is the only socket for the client ID: ComfyUI keeps one connection per ID, so a second one (e.g. the
+    // renderer's) would replace it. Live previews are therefore relayed from here, not read by the renderer directly.
+    if (options.onProgress || options.onPreview) {
+      stopWatching = watchSteps(endpoint, clientId, prompt, (step) => options.onProgress?.({ phase: "running", step }), options.onPreview);
+    }
+    promptId = await submitPrompt(endpoint, prompt, clientId);
     await updateComfyJob(job.id, { promptId, status: "running" });
     options.onSubmitted?.(promptId);
     result = await waitForPrompt(endpoint, promptId, options.onProgress, options.waitWhileQueued);
+    stopWatching();
     if (staging) {
       const stagedProjectId = projectId!;
       const row = db().prepare("SELECT slug, project_path FROM martini_projects WHERE id = ?").get(stagedProjectId) as { slug: string; project_path: string };
@@ -306,6 +376,7 @@ export async function runWorkflowTemplate(isDevelopment: boolean, name: string, 
         .run(randomUUID(), stagedProjectId, `${name}: downloaded ${recovered.downloaded} changed remote artifact(s).`, JSON.stringify({ endpoint, ...recovered }), new Date().toISOString());
     }
   } catch (error) {
+    stopWatching();
     const message = error instanceof Error ? error.message : "ComfyUI workflow failed.";
     // Nothing reached ComfyUI if there is no prompt ID (bad values, missing nodes, rejected validation), so there is nothing to free.
     await updateComfyJob(job.id, { promptId: promptId || undefined, status: "failed", error: message, completedAt: new Date().toISOString(), cleanupStatus: promptId ? "pending" : "not_requested" });

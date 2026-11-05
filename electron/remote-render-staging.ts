@@ -24,6 +24,12 @@ export function remotePackageRoot(slug: string, packageFolder: string, localProj
   return safeRemotePath(`${slug}/${relative}`);
 }
 
+type RemoteEntry = { size: number; mtimeMs: number | null };
+/** Files this app session has proved identical on a worker (by hash), keyed by endpoint and remote path. A file is
+ *  trusted again only while both copies keep exactly the size and modified time seen then; a new pod, an edit on either
+ *  side, or an app restart means a fresh check. */
+const confirmed = new Map<string, { localSize: number; localMtimeMs: number; remoteSize: number; remoteMtimeMs: number | null }>();
+
 function under(root: string, target: string): boolean { const rel = path.relative(root, target); return !!rel && !rel.startsWith("..") && !path.isAbsolute(rel); }
 async function sha256(file: string): Promise<string> { return new Promise((resolve, reject) => { const hash = createHash("sha256"); const input = createReadStream(file); input.on("data", (chunk) => hash.update(chunk)); input.once("error", reject); input.once("end", () => resolve(hash.digest("hex"))); }); }
 
@@ -52,9 +58,12 @@ export class RemoteRenderStaging {
   async stat(file: string): Promise<{ exists: boolean; type?: string; size?: number }> { return (await (await this.request(`/martini/fs/stat${this.query(file)}`)).json()) as { exists: boolean; type?: string; size?: number }; }
   async hash(file: string): Promise<{ sha256: string; size: number } | null> { const stat = await this.stat(file); if (!stat.exists) return null; return (await (await this.request(`/martini/fs/hash${this.query(file)}`)).json()) as { sha256: string; size: number }; }
   async mkdir(folder: string): Promise<void> { await this.request("/martini/fs/mkdir", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: safeRemotePath(folder) }) }); }
-  async list(folder: string): Promise<Array<{ name: string; type: "file" | "dir"; size: number }>> {
-    const body = await (await this.request(`/martini/fs/list${this.query(folder)}`)).json() as { entries?: Array<{ name: string; type: "file" | "dir"; size: number }> };
+  async list(folder: string): Promise<Array<{ name: string; type: "file" | "dir"; size: number; mtime_ms?: number }>> {
+    const body = await (await this.request(`/martini/fs/list${this.query(folder)}`)).json() as { entries?: Array<{ name: string; type: "file" | "dir"; size: number; mtime_ms?: number }> };
     return Array.isArray(body.entries) ? body.entries : [];
+  }
+  async move(from: string, to: string): Promise<void> {
+    await this.request("/martini/fs/move", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ from: safeRemotePath(from), to: safeRemotePath(to) }) });
   }
   async upload(local: string, remote: string, overwrite: boolean): Promise<void> { await this.request(`/martini/fs/file${this.query(remote)}&overwrite=${overwrite ? "1" : "0"}`, { method: "PUT", body: Readable.toWeb(createReadStream(local)) as BodyInit }); }
   async download(remote: string, local: string, allowOverwrite = false): Promise<void> {
@@ -65,8 +74,35 @@ export class RemoteRenderStaging {
     await new Promise<void>((resolve, reject) => Readable.fromWeb(response.body as import("node:stream/web").ReadableStream).pipe(createWriteStream(partial, { flags: "wx" })).once("error", reject).once("finish", resolve));
     await fs.rename(partial, local);
   }
+  /** Every file under a remote folder, from one listing request per folder (sizes and times come with the listing). */
+  private async remoteTree(root: string): Promise<Map<string, RemoteEntry>> {
+    const tree = new Map<string, RemoteEntry>();
+    const stat = await this.stat(root);
+    if (!stat.exists || stat.type !== "dir") return tree;
+    const visit = async (folder: string): Promise<void> => {
+      for (const entry of await this.list(folder)) {
+        const remote = safeRemotePath(`${folder}/${entry.name}`);
+        if (entry.type === "dir") await visit(remote);
+        else if (entry.type === "file") tree.set(remote, { size: entry.size, mtimeMs: typeof entry.mtime_ms === "number" ? entry.mtime_ms : null });
+      }
+    };
+    await visit(root);
+    return tree;
+  }
+  private confirmedKey(remote: string): string { return `${this.endpoint}|${remote}`; }
+  /** True when this session already proved the two copies identical and neither side has changed since. */
+  private isConfirmed(remote: string, local: { size: number; mtimeMs: number }, entry: RemoteEntry): boolean {
+    const known = confirmed.get(this.confirmedKey(remote));
+    return Boolean(known && entry.mtimeMs !== null && known.localSize === local.size && known.localMtimeMs === local.mtimeMs
+      && known.remoteSize === entry.size && known.remoteMtimeMs === entry.mtimeMs);
+  }
+  private confirm(remote: string, local: { size: number; mtimeMs: number }, entry: RemoteEntry): void {
+    confirmed.set(this.confirmedKey(remote), { localSize: local.size, localMtimeMs: local.mtimeMs, remoteSize: entry.size, remoteMtimeMs: entry.mtimeMs });
+  }
   /** Uploads the complete local-authoritative project, never following a symlink.
-   * This intentionally supports every Martini Shot workflow, not just rendering. */
+   * This intentionally supports every Martini Shot workflow, not just rendering.
+   * One listing per remote folder replaces a stat and hash request per file: a file is uploaded when the worker lacks it
+   * or has a different size, skipped when this session already confirmed it unchanged, and hash-checked otherwise. */
   async stageProject(localProjectRoot: string, slug: string, packageFolder = localProjectRoot): Promise<StagingEvidence> {
     const root = path.resolve(localProjectRoot); const packageRoot = path.resolve(packageFolder);
     if (packageRoot !== root && !under(root, packageRoot)) throw new Error("Package folder is outside its local project.");
@@ -83,19 +119,27 @@ export class RemoteRenderStaging {
     for (const item of required) { const target = path.join(root, item); const stat = await fs.lstat(target).catch(() => null); if (stat?.isSymbolicLink()) throw new Error(`Refusing symlinked required input: ${item || "project root"}`); if (stat?.isDirectory()) await walk(target); else if (stat?.isFile()) files.push(target); }
     if (packageRoot !== root) await walk(packageRoot);
     const seen = [...new Set(files)]; const evidence: StagingEvidence = { fileCount: seen.length, uploaded: 0, skipped: 0, bytesUploaded: 0, endpoint: this.endpoint };
+    const tree = await this.remoteTree(safeRemotePath(slug));
     for (const local of seen) {
       try {
         if (!under(root, local)) throw new Error("Local staging path escaped project root.");
         const relative = safeRemotePath(path.relative(root, local).split(path.sep).join("/")); const remote = safeRemotePath(`${slug}/${relative}`);
-        const localStat = await fs.stat(local); const localHash = await sha256(local); const existing = await this.hash(remote);
-        if (existing?.sha256 === localHash && existing.size === localStat.size) { evidence.skipped++; continue; }
-        const parent = path.posix.dirname(remote); if (parent !== ".") await this.mkdir(parent);
-        await this.upload(local, remote, Boolean(existing)); evidence.uploaded++; evidence.bytesUploaded += localStat.size;
+        const localStat = await fs.stat(local); const entry = tree.get(remote);
+        if (entry && entry.size === localStat.size) {
+          if (this.isConfirmed(remote, localStat, entry)) { evidence.skipped++; continue; }
+          const existing = await this.hash(remote);
+          if (existing && existing.size === localStat.size && existing.sha256 === await sha256(local)) { this.confirm(remote, localStat, entry); evidence.skipped++; continue; }
+        }
+        if (!entry) { const parent = path.posix.dirname(remote); if (parent !== ".") await this.mkdir(parent); }
+        await this.upload(local, remote, Boolean(entry)); evidence.uploaded++; evidence.bytesUploaded += localStat.size;
+        // The worker's new modified time is unknown until the next listing, so the next run hash-checks it once.
+        this.confirm(remote, localStat, { size: localStat.size, mtimeMs: null });
       } catch (error) { evidence.failedFile = path.relative(root, local); throw error; }
     }
     return evidence;
   }
-  /** Downloads only changed remote artifacts, atomically, into the local authority. */
+  /** Downloads only changed remote artifacts, atomically, into the local authority. Files this session already confirmed
+   * identical (same sizes and times on both sides) are skipped without hashing. */
   async synchronizeProject(localProjectRoot: string, slug: string): Promise<{ downloaded: number; bytesDownloaded: number }> {
     const root = path.resolve(localProjectRoot); const remoteRoot = safeRemotePath(slug); let downloaded = 0; let bytesDownloaded = 0;
     const visit = async (remoteFolder: string): Promise<void> => {
@@ -104,11 +148,16 @@ export class RemoteRenderStaging {
         if (!under(root, local)) throw new Error("Remote project entry escaped local project root.");
         if (entry.type === "dir") { await visit(remote); continue; }
         if (entry.type !== "file") continue;
-        const localStat = await fs.stat(local).catch(() => null); const remoteHash = await this.hash(remote);
-        const same = localStat?.isFile() && localStat.size === remoteHash?.size && await sha256(local) === remoteHash?.sha256;
-        if (same) continue;
+        const info: RemoteEntry = { size: entry.size, mtimeMs: typeof entry.mtime_ms === "number" ? entry.mtime_ms : null };
+        const localStat = await fs.stat(local).catch(() => null);
+        if (localStat?.isFile() && localStat.size === entry.size) {
+          if (this.isConfirmed(remote, localStat, info)) continue;
+          const remoteHash = await this.hash(remote);
+          if (remoteHash && remoteHash.size === localStat.size && remoteHash.sha256 === await sha256(local)) { this.confirm(remote, localStat, info); continue; }
+        }
         // This is a deliberate recovery of an artifact generated by the selected remote backend.
         await this.download(remote, local, Boolean(localStat)); downloaded++; bytesDownloaded += entry.size;
+        this.confirm(remote, await fs.stat(local), info);
       }
     };
     await visit(remoteRoot); return { downloaded, bytesDownloaded };

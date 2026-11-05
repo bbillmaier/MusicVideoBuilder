@@ -321,6 +321,8 @@ export type RenderAttempt = {
   loaderMode: string;
   status: "queued" | "running" | "cleanup" | "complete" | "failed" | "interrupted";
   phase: "waiting" | "queued" | "running" | "cleanup" | null;
+  /** Live from ComfyUI's WebSocket while the clip renders: the node running now and, when it reports one, step x of y. */
+  step: { node: string; label: string; value: number | null; max: number | null } | null;
   promptId: string | null;
   noiseSeed: number;
   cleanup: CleanupState;
@@ -336,6 +338,8 @@ export type RenderAttempt = {
 
 /** A short-lived, local ComfyUI WebSocket session for one in-progress clip. */
 export type LivePreviewSession = { projectId: string; clipIndex: number; endpoint: string; clientId: string } | null;
+/** One sampler preview, relayed by main from the render's ComfyUI WebSocket (local or remote). */
+export type LivePreviewFrame = { projectId: string; clipIndex: number; image: string; mime: string; step: number; total: number; frames: number };
 
 export type ProduceClip = {
   index: number;

@@ -111,30 +111,14 @@ function ProduceContent({ project, comfy, onNavigate }: { project: ProjectDetail
   const peaks = usePeaks(overview?.package ? overview.songUrl : null);
 
   useEffect(() => {
-    let socket: WebSocket | null = null;
-    const connect = (session: LivePreviewSession) => {
-      socket?.close();
-      socket = null;
-      setPreview(null);
-      if (!session || session.projectId !== project.id) return;
-      const url = new URL(session.endpoint);
-      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-      url.pathname = "/ws";
-      url.search = `clientId=${encodeURIComponent(session.clientId)}`;
-      socket = new WebSocket(url);
-      socket.onmessage = (event) => {
-        try {
-          const packet = JSON.parse(String(event.data)) as { type?: string; data?: { image?: string; mime?: string; step?: number; total?: number; frames?: number } };
-          const data = packet.data;
-          if (packet.type !== "martini_preview" || !data?.image || !data.mime) return;
-          setPreview({ clipIndex: session.clipIndex, url: `data:${data.mime};base64,${data.image}`,
-            step: Number(data.step) || 0, total: Number(data.total) || 0, frames: Number(data.frames) || 1 });
-        } catch { /* A non-preview ComfyUI event is irrelevant here. */ }
-      };
-    };
-    void window.martini.produce.previewSession().then(connect).catch(() => undefined);
-    const unsubscribe = window.martini.produce.onPreviewSession(connect);
-    return () => { unsubscribe(); socket?.close(); };
+    // Main owns the render's ComfyUI WebSocket (ComfyUI keeps one socket per client ID) and relays previews here,
+    // so they arrive the same way from the local install and a remote worker. A new or ended session clears the image.
+    const offSession = window.martini.produce.onPreviewSession(() => setPreview(null));
+    const offFrame = window.martini.produce.onPreviewFrame((frame) => {
+      if (frame.projectId !== project.id) return;
+      setPreview({ clipIndex: frame.clipIndex, url: `data:${frame.mime};base64,${frame.image}`, step: frame.step, total: frame.total, frames: frame.frames });
+    });
+    return () => { offSession(); offFrame(); };
   }, [project.id]);
 
   // The clip shown in the detail panels: the user's pick, else the one rendering, else the last failed, else the next one.
@@ -391,7 +375,10 @@ function CurrentClip({ clip, projectId, active, now, pending, canRetry, canRende
   onRender(): void; onRetry(): void; onRerender(): void; onCopy(): Promise<unknown>; onCopyError(reason: unknown): void;
 }) {
   const attempt = clip.lastAttempt;
-  const phaseText = attempt?.phase === "queued" ? "Queued in ComfyUI…" : attempt?.phase === "cleanup" ? "Cleaning up ComfyUI…" : attempt?.phase === "running" ? "Rendering…" : attempt?.phase === "waiting" ? "Sending to ComfyUI…" : STATUS_TEXT[clip.status];
+  // ComfyUI's own WebSocket tells us which node is running and its step count, locally and on a remote worker.
+  const live = attempt?.phase === "running" ? attempt.step : null;
+  const stepText = live ? `${live.label}${live.max ? ` ${live.value}/${live.max}` : "…"}` : null;
+  const phaseText = attempt?.phase === "queued" ? "Queued in ComfyUI…" : attempt?.phase === "cleanup" ? "Cleaning up ComfyUI…" : attempt?.phase === "running" ? stepText ?? "Rendering…" : attempt?.phase === "waiting" ? "Sending to ComfyUI…" : STATUS_TEXT[clip.status];
   return <section className="panel current-clip">
     <PanelHead icon={Icon.film} title={active ? "Current clip (rendering)" : `Clip ${clip.index}`}
       aside={active && attempt ? <ClipState status={clip.status}>{`${phaseText}${attempt.submittedAt ? ` ${elapsed(attempt.submittedAt, now)}` : ""}`}</ClipState> : <ClipState status={clip.status} />} />
@@ -399,7 +386,10 @@ function CurrentClip({ clip, projectId, active, now, pending, canRetry, canRende
       <div className="clip-preview">{clip.status === "rendered" && clip.outputPath
         ? <video src={`martini-asset://clip/${encodeURIComponent(projectId)}/${clip.index}?v=${encodeURIComponent(clip.lastAttempt?.finishedAt ?? clip.outputPath)}`} controls preload="metadata" />
         : preview ? <><img src={preview.url} alt={`Live sampler preview for clip ${clip.index}`} /><span className="preview-caption">Sampling {preview.step}/{preview.total}{preview.frames > 1 ? ` · ${preview.frames}-frame preview` : ""}</span></>
-          : <span className="muted small preview-empty"><Icon.film size={22} aria-hidden />{clip.status === "rendering" ? "Rendering… live previews are off or waiting for the first sampling step." : "Not rendered yet."}</span>}</div>
+          : <span className="muted small preview-empty"><Icon.film size={22} aria-hidden />{clip.status !== "rendering" ? "Not rendered yet."
+            : live ? <span className="step-progress"><span>{live.label}{live.max ? <b className="num"> · step {live.value} of {live.max}</b> : "…"}</span>
+              {live.max ? <ProgressBar value={Math.round(((live.value ?? 0) / live.max) * 100)} label={`${live.label} progress`} /> : null}</span>
+            : "Rendering… waiting for ComfyUI to report progress."}</span>}</div>
       <div className="clip-meta">
         <h3 className="clip-title num">{clip.section ? `Section ${clip.section}` : "Section unknown"} <span className="sep">/</span> Clip {clip.index}</h3>
         <dl>

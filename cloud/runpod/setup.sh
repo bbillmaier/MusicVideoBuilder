@@ -42,6 +42,12 @@ WHISPER_MODEL="${WHISPER_MODEL:-none}"            # pre-download, e.g. small; ot
 EXTRA_MODELS="${EXTRA_MODELS:-}"                  # "folder|url[|filename];folder|url"
 HF_TOKEN="${HF_TOKEN:-}"
 
+# SageAttention: faster attention for the video model (the local dev PC runs ComfyUI with it).
+SAGE_ATTENTION="${SAGE_ATTENTION:-1}"             # 1 = install it and start ComfyUI with --use-sage-attention
+SAGE_REPO="${SAGE_REPO:-https://github.com/thu-ml/SageAttention.git}"
+SAGE_REF="${SAGE_REF:-main}"
+WHEEL_DIR="${WHEEL_DIR:-$WORKSPACE/wheels}"       # built wheels are kept here, per torch version and GPU
+
 SKIP_MODELS="${SKIP_MODELS:-0}"
 SKIP_START="${SKIP_START:-0}"                     # 1 = provision only, do not start ComfyUI
 RUNPOD_SERVICES="${RUNPOD_SERVICES:-1}"           # 1 = also run the image's /start.sh (SSH, Jupyter)
@@ -217,6 +223,68 @@ for req in "$NODES/MartiniShot/requirements.txt" "$NODES/comfyui_memory_cleanup/
   if [[ -f "$req" ]]; then "$PY" -m pip install --quiet -r "$req"; fi
 done
 
+# ---------------------------------------------------------------- 3b. SageAttention
+# SageAttention 2 is built from source for this GPU the first time (about 10 minutes) and the wheel is cached on the
+# volume. Without a CUDA compiler, or if the build fails, SageAttention 1 (Triton kernels, no compiler) is used instead.
+# ComfyUI only gets --use-sage-attention when a real attention call on the GPU works, so a bad build can't stop it starting.
+SAGE_FLAG=""
+sage_works() {
+  "$PY" - >/dev/null 2>&1 <<'PYCODE'
+import torch
+from sageattention import sageattn
+q = torch.randn(1, 8, 256, 64, device="cuda", dtype=torch.float16)
+sageattn(q, q, q, tensor_layout="HND")
+torch.cuda.synchronize()
+PYCODE
+}
+sage_version() { "$PY" -c 'import importlib.metadata as m; print(m.version("sageattention"))' 2>/dev/null || echo "?"; }
+
+if [[ "$SAGE_ATTENTION" == 1 ]]; then
+  log "SageAttention"
+  if sage_works; then
+    echo "  sageattention $(sage_version) is installed and works"
+  else
+    cap="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d ' ' || true)"
+    torch_tag="$("$PY" -c 'import torch; print(torch.__version__.replace("+", "-"))')"
+    cache="$WHEEL_DIR/sageattention-$torch_tag-sm${cap/./}"
+    wheel="$(ls "$cache"/sageattention-*.whl 2>/dev/null | head -1 || true)"
+    if [[ -n "$wheel" ]]; then
+      echo "  using the cached build $wheel"
+    else
+      nvcc_bin="$(command -v nvcc || ls /usr/local/cuda/bin/nvcc 2>/dev/null || true)"
+      if [[ -n "$nvcc_bin" && -n "$cap" ]]; then
+        log "Building SageAttention 2 for sm_${cap/./} with $("$nvcc_bin" --version | tail -1) (first start only, about 10 minutes)"
+        mkdir -p "$cache"
+        "$PY" -m pip install --quiet ninja packaging setuptools wheel
+        if env PATH="$(dirname "$nvcc_bin"):$PATH" CUDA_HOME="$(dirname "$(dirname "$nvcc_bin")")" \
+             TORCH_CUDA_ARCH_LIST="$cap" MAX_JOBS="${MAX_JOBS:-8}" \
+             "$PY" -m pip wheel --no-build-isolation --no-deps -w "$cache" "git+$SAGE_REPO@$SAGE_REF" \
+             >"$LOG_DIR/sageattention-build.log" 2>&1; then
+          wheel="$(ls "$cache"/sageattention-*.whl 2>/dev/null | head -1 || true)"
+        else
+          warn "SageAttention 2 build failed; the full output is in $LOG_DIR/sageattention-build.log"
+        fi
+      else
+        if [[ -z "$cap" ]]; then warn "nvidia-smi found no GPU; SageAttention 2 can't be built here"
+        else warn "No CUDA compiler (nvcc) in this image; SageAttention 2 can't be built here"; fi
+      fi
+    fi
+    if [[ -n "$wheel" ]]; then
+      "$PY" -m pip install --quiet --force-reinstall --no-deps "$wheel" || warn "Installing $wheel failed"
+    fi
+    if ! sage_works; then
+      warn "Using SageAttention 1 instead (slower than 2, still faster than the default)"
+      "$PY" -m pip install --quiet "sageattention==1.0.6" || warn "SageAttention 1 could not be installed"
+    fi
+  fi
+  if sage_works; then
+    SAGE_FLAG="--use-sage-attention"
+    echo "  sageattention $(sage_version): ComfyUI will start with --use-sage-attention"
+  else
+    warn "SageAttention does not work on this pod; ComfyUI starts with its default attention"
+  fi
+fi
+
 # ---------------------------------------------------------------- 4. models
 if [[ "$SKIP_MODELS" != 1 ]]; then
   log "Models"
@@ -259,11 +327,11 @@ fi
 if [[ "$SKIP_START" == 1 ]]; then exit 0; fi
 
 trap - ERR
-log "Starting ComfyUI on 0.0.0.0:$COMFYUI_PORT"
+log "Starting ComfyUI on 0.0.0.0:$COMFYUI_PORT${SAGE_FLAG:+ with SageAttention}"
 cd "$COMFY_DIR"
 while true; do
   # shellcheck disable=SC2086
-  "$PY" main.py --listen 0.0.0.0 --port "$COMFYUI_PORT" $COMFYUI_ARGS 2>&1 | tee -a "$LOG_DIR/comfyui.log" || true
+  "$PY" main.py --listen 0.0.0.0 --port "$COMFYUI_PORT" $SAGE_FLAG $COMFYUI_ARGS 2>&1 | tee -a "$LOG_DIR/comfyui.log" || true
   warn "ComfyUI exited; restarting in 5 seconds"
   sleep 5
 done

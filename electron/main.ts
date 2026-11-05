@@ -95,6 +95,7 @@ app.whenReady().then(() => {
     isDevelopment,
     onChange: (projectId) => BrowserWindow.getAllWindows().forEach((window) => window.webContents.send("martini:produce-changed", projectId)),
     onPreviewSession: (session) => BrowserWindow.getAllWindows().forEach((window) => window.webContents.send("martini:preview-session", session)),
+    onPreviewFrame: (frame) => BrowserWindow.getAllWindows().forEach((window) => window.webContents.send("martini:preview-frame", frame)),
   });
 
   configureResultsService({

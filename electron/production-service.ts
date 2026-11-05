@@ -12,12 +12,12 @@ import { CLIP_CAMERAS } from "./contracts";
 import type {
   ClipCamera, ClipChanges, ClipMode, ClipRefOption, ClipRefRole, ClipRevisionMode, ClipRevisionRequest, ClipShotSettings,
   ClipDetail, ClipStatus, CleanupState, DecisionRow, PackageRun, PackageRunStatus, PlanData, ProduceClip, ProduceEvent, ProduceOverview,
-  PromptPackage, RenderAttempt, RenderQueueState, RerenderResult, TimelineSection, CreativeDirection, LivePreviewSession,
+  PromptPackage, RenderAttempt, RenderQueueState, RerenderResult, TimelineSection, CreativeDirection, LivePreviewSession, LivePreviewFrame,
 } from "./contracts";
 import { archiveStamp, formatRanges, parseClipSelection, withContinuations } from "./results-rules";
 import {
   ComfyWorkflowError, comfyHistory, comfyQueueIds, comfyStatus, freeComfyMemory, runWorkflowTemplate, serializeComfyWork,
-  type CleanupEvidence, type WorkflowProgress,
+  type CleanupEvidence, type StepProgress, type WorkflowProgress,
 } from "./comfy-client";
 import { db, getMachineSettings } from "./db";
 import { locationsOverview } from "./location-service";
@@ -32,7 +32,7 @@ import {
 } from "./production-rules";
 import { ensureComfyProjectSaved, getProject, projectIdentity, suppliedLocationNames } from "./project-service";
 import { isInside } from "./project-rules";
-import { RemoteRenderStaging, remoteOutputPath } from "./remote-render-staging";
+import { RemoteRenderStaging, remoteOutputPath, remotePackageRoot } from "./remote-render-staging";
 
 const PACKAGE_STAGE = "prompt_package";
 const now = () => new Date().toISOString();
@@ -77,8 +77,10 @@ let development = false;
 let notify: (projectId: string) => void = () => undefined;
 let previewSession: LivePreviewSession = null;
 let notifyPreview: (session: LivePreviewSession) => void = () => undefined;
+let notifyPreviewFrame: (frame: LivePreviewFrame) => void = () => undefined;
 const packageActivity = new Map<string, NonNullable<PackageRun["activity"]>>();
 const attemptPhase = new Map<string, NonNullable<RenderAttempt["phase"]>>();
+const attemptStep = new Map<string, StepProgress>();
 let gpuCache: { label: string | null; at: number } = { label: null, at: 0 };
 
 /** A remote node reports paths relative to its own output root. Convert only a
@@ -91,7 +93,10 @@ function localProjectPath(project: { slug: string; projectPath: string }, value:
   return path.join(project.projectPath, ...normalized.slice(index + marker.length).split("/").filter(Boolean));
 }
 
-export function configureProductionService(options: { isDevelopment: boolean; onChange(projectId: string): void; onPreviewSession(session: LivePreviewSession): void }): void {
+export function configureProductionService(options: {
+  isDevelopment: boolean; onChange(projectId: string): void; onPreviewSession(session: LivePreviewSession): void; onPreviewFrame(frame: LivePreviewFrame): void;
+}): void {
+  notifyPreviewFrame = options.onPreviewFrame;
   development = options.isDevelopment;
   notify = options.onChange;
   notifyPreview = (session) => { previewSession = session; options.onPreviewSession(session); };
@@ -165,7 +170,7 @@ export function toPackage(row: PackageRow): PromptPackage | null {
 export function toAttempt(row: AttemptRow): RenderAttempt {
   const cleanup = parseJson<CleanupEvidence>(row.cleanup);
   return {
-    id: row.id, attempt: row.attempt, loaderMode: row.loader_mode, status: row.status, phase: attemptPhase.get(row.id) ?? null, promptId: row.prompt_id,
+    id: row.id, attempt: row.attempt, loaderMode: row.loader_mode, status: row.status, phase: attemptPhase.get(row.id) ?? null, step: attemptStep.get(row.id) ?? null, promptId: row.prompt_id,
     noiseSeed: row.noise_seed, cleanup: row.cleanup_status, cleanupDetail: cleanupText(cleanup), outputPath: row.output_path, loaderReport: row.loader_report,
     error: row.error, startedAt: row.started_at, submittedAt: row.submitted_at, renderedAt: row.rendered_at, finishedAt: row.finished_at,
   };
@@ -812,6 +817,14 @@ async function renderClip(queueId: string, projectId: string, packageRunId: stri
   attemptPhase.set(attemptId, "waiting");
   notify(projectId);
   const phase = (value: NonNullable<RenderAttempt["phase"]>) => { if (attemptPhase.get(attemptId) !== value) { attemptPhase.set(attemptId, value); notify(projectId); } };
+  // Step events can arrive many times a second (tiled decodes); refresh the page at most every 400 ms, but always on a new node.
+  let lastStepNotice = 0;
+  const step = (value: StepProgress) => {
+    const previous = attemptStep.get(attemptId);
+    attemptStep.set(attemptId, value);
+    const at = Date.now();
+    if (previous?.node !== value.node || value.value === value.max || at - lastStepNotice > 400) { lastStepNotice = at; notify(projectId); }
+  };
   const recordCleanup = (evidence: CleanupEvidence) => {
     update("render_attempts", attemptId, { cleanup_status: evidence.status, cleanup: JSON.stringify(evidence) });
     notify(projectId);
@@ -860,6 +873,7 @@ async function renderClip(queueId: string, projectId: string, packageRunId: stri
       const run = await runWorkflowTemplate(development, "05-render-next-clip.json", values, projectId, undefined, {
         endpoint: remote ? worker!.endpoint : undefined,
         jobId, waitWhileQueued: true, clientId: previewClientId,
+        onPreview: previewClientId ? (frame) => notifyPreviewFrame({ projectId, clipIndex: clip.clip_index, ...frame }) : undefined,
         onSubmitted: (promptId) => {
           update("render_attempts", attemptId, { prompt_id: promptId, status: "running", submitted_at: now() });
           addReport(projectId, "render_clip", `Clip ${clip.clip_index}: workflow queued in ComfyUI (${mode}, attempt ${attemptNumber}).`, { attemptId, promptId });
@@ -868,6 +882,7 @@ async function renderClip(queueId: string, projectId: string, packageRunId: stri
         onProgress: (progress) => {
           if (progress.phase === "cleanup") update("render_attempts", attemptId, { status: "cleanup" });
           phase(progress.phase);
+          if (progress.step) step(progress.step);
         },
         onCleanup: recordCleanup,
       });
@@ -930,6 +945,7 @@ async function renderClip(queueId: string, projectId: string, packageRunId: stri
   } finally {
     if (previewClientId) notifyPreview(null);
     attemptPhase.delete(attemptId);
+    attemptStep.delete(attemptId);
     notify(projectId);
   }
 }
@@ -1076,16 +1092,42 @@ function shotSettings(record: CreativeRecord, options: ClipRefOption[]): ClipSho
   };
 }
 
-/** Moves the videos of these clips to `archive` and marks them for rendering. Returns how many files moved. */
-async function supersedeClips(folder: string, rows: ClipRow[], indexes: number[], archive: string): Promise<number> {
+type ProjectPlace = { slug: string; projectPath: string };
+
+/** The package folder as the ComfyUI that runs a workflow sees it: the local path, or the remote worker's
+ *  output-relative mirror (martini_shot/<slug>/...), which runWorkflowTemplate stages before it runs. */
+async function comfyFolder(project: ProjectPlace, folder: string): Promise<string> {
+  if ((await getMachineSettings()).executionDestination !== "remote") return folder;
+  return `martini_shot/${remotePackageRoot(project.slug, folder, project.projectPath)}`;
+}
+
+const videoOf = (row: ClipRow) => (name: string) => {
+  const lower = name.toLowerCase();
+  const base = row.video_name.toLowerCase();
+  return lower.endsWith(".mp4") && (lower === `${base}.mp4` || lower.startsWith(`${base}_`));
+};
+
+/** Moves the videos of these clips to `archive` and marks them for rendering. Returns how many files moved.
+ *  In remote mode the worker's mirror is moved too: it is never deleted by staging, so an old video left there
+ *  would be downloaded back by the next workflow and the clip would look rendered again. */
+async function supersedeClips(project: ProjectPlace, folder: string, rows: ClipRow[], indexes: number[], archive: string): Promise<number> {
+  const chosen = rows.filter((item) => indexes.includes(item.clip_index));
+  const machine = await getMachineSettings();
+  if (machine.executionDestination === "remote") {
+    const worker = new RemoteRenderStaging(machine.remoteComfyUrl, machine.remoteFileApiToken);
+    const remoteFolder = remotePackageRoot(project.slug, folder, project.projectPath);
+    const remoteArchive = remotePackageRoot(project.slug, archive, project.projectPath);
+    const listing = (await worker.stat(remoteFolder)).exists ? await worker.list(remoteFolder) : [];
+    for (const row of chosen) {
+      for (const entry of listing.filter((item) => item.type === "file" && videoOf(row)(item.name))) {
+        await worker.move(`${remoteFolder}/${entry.name}`, `${remoteArchive}/${entry.name}`);
+      }
+    }
+  }
   const names = await fs.readdir(folder).catch(() => [] as string[]);
   let moved = 0;
-  for (const row of rows.filter((item) => indexes.includes(item.clip_index))) {
-    const base = row.video_name.toLowerCase();
-    for (const name of names.filter((name) => {
-      const lower = name.toLowerCase();
-      return lower.endsWith(".mp4") && (lower === `${base}.mp4` || lower.startsWith(`${base}_`));
-    })) {
+  for (const row of chosen) {
+    for (const name of names.filter(videoOf(row))) {
       await fs.mkdir(archive, { recursive: true });
       await fs.rename(path.join(folder, name), path.join(archive, name));
       moved += 1;
@@ -1186,8 +1228,9 @@ export async function reviseClipPrompt(projectId: unknown, clipIndex: unknown, r
     if (carried.length) node.propagate = carried;
 
     const take = mode === "Try another take";
+    const packageFolder = await comfyFolder(project, pkg.folder);
     const run = await serializeComfyWork(() => runWorkflowTemplate(development, take ? "04b-revise-clip-prompt.json" : "04c-apply-clip-settings.json", {
-      package_folder: pkg.folder, clip_index: index, revision_mode: mode, creative_text: creativeText, changes: JSON.stringify(node),
+      package_folder: packageFolder, clip_index: index, revision_mode: mode, creative_text: creativeText, changes: JSON.stringify(node),
       seed: settings?.seed ?? 0, ...(take ? { director_llm: settings!.directorLlm } : {}),
     }, project.id));
     const report = previewText(run.outputs, "revision_report") ?? "Clip prompt revised.";
@@ -1208,7 +1251,7 @@ export async function reviseClipPrompt(projectId: unknown, clipIndex: unknown, r
 
     const changed = withContinuations([index, ...carried], rows.map((item) => ({ index: item.clip_index, transition: item.transition ?? "", overlapFrames: item.overlap_frames })));
     const archive = path.join(pkg.folder, "superseded", `prompt-revision-${archiveStamp(now())}`);
-    const moved = await supersedeClips(pkg.folder, rows, changed.clips, archive);
+    const moved = await supersedeClips(project, pkg.folder, rows, changed.clips, archive);
     db().prepare("UPDATE martini_projects SET status = 'prompt_package_ready', updated_at = ? WHERE id = ?").run(now(), project.id);
     addReport(project.id, "clip_prompt_revision", `${report}\nClip${changed.clips.length === 1 ? "" : "s"} ${formatRanges(changed.clips)} now need rendering.`
       + (changed.added.length ? ` ${formatRanges(changed.added)} added for motion continuity.` : "")
@@ -1244,7 +1287,7 @@ export async function rerenderClip(projectId: unknown, clipIndex: unknown): Prom
     othersPending = rows.some((item) => item.status !== "rendered" && !chosen.includes(item.clip_index));
     const archive = path.join(pkg.folder, "superseded", `rerender-${archiveStamp(now())}`);
     if (!isInside(project.projectPath, archive)) throw new Error("The package folder is outside the project folder.");
-    const moved = await supersedeClips(pkg.folder, rows, chosen, archive);
+    const moved = await supersedeClips(project, pkg.folder, rows, chosen, archive);
     db().prepare("UPDATE martini_projects SET status = 'prompt_package_ready', updated_at = ? WHERE id = ?").run(now(), project.id);
     addReport(project.id, "rerender", `Re-render clip ${index} with a new seed`
       + (chosen.length > 1 ? ` (clip${chosen.length === 2 ? "" : "s"} ${formatRanges(chosen.filter((item) => item !== index))} reuse its frames and render again too)` : "")
@@ -1321,21 +1364,7 @@ export async function rerenderUnchanged(projectId: unknown, request: unknown): P
     chosen = withContinuations(selected, rows.map((row) => ({ index: row.clip_index, transition: row.transition ?? "", overlapFrames: row.overlap_frames })));
     archive = path.join(pkg.folder, "superseded", archiveStamp(now()));
     if (!isInside(project.projectPath, archive)) throw new Error("The package folder is outside the project folder.");
-    const names = await fs.readdir(pkg.folder).catch(() => [] as string[]);
-    let moved = 0;
-    for (const row of rows.filter((item) => chosen.clips.includes(item.clip_index))) {
-      const base = row.video_name.toLowerCase();
-      const files = names.filter((name) => {
-        const lower = name.toLowerCase();
-        return lower.endsWith(".mp4") && (lower === `${base}.mp4` || lower.startsWith(`${base}_`));
-      });
-      for (const file of files) {
-        await fs.mkdir(archive, { recursive: true });
-        await fs.rename(path.join(pkg.folder, file), path.join(archive, file));
-        moved += 1;
-      }
-      update("render_clips", row.id, { status: "pending", output_path: null, error: null, rendered_at: null, updated_at: now() });
-    }
+    const moved = await supersedeClips(project, pkg.folder, rows, chosen.clips, archive);
     db().prepare("UPDATE martini_projects SET status = 'prompt_package_ready', updated_at = ? WHERE id = ?").run(now(), project.id);
     addReport(project.id, "rerender", `Re-render unchanged plan: clip${chosen.clips.length === 1 ? "" : "s"} ${formatRanges(chosen.clips)}`
       + (chosen.added.length ? ` (${formatRanges(chosen.added)} added because they continue from a re-rendered clip)` : "")

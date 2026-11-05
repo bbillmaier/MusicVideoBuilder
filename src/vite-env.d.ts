@@ -12,7 +12,7 @@ import type {
   TimelineSection as SharedTimelineSection, ProduceEvent as SharedProduceEvent,
   ResultsOverview as SharedResultsOverview, FinalVideo as SharedFinalVideo, DirectorReport as SharedDirectorReport, ReportSection as SharedReportSection,
   RerenderRequest as SharedRerenderRequest, RerenderResult as SharedRerenderResult, FinalState as SharedFinalState,
-  ClipRevisionRequest as SharedClipRevisionRequest,
+  ClipRevisionRequest as SharedClipRevisionRequest, LivePreviewFrame as SharedLivePreviewFrame,
 } from "../electron/contracts";
 
 declare global {
@@ -129,6 +129,7 @@ declare global {
         copyOutputPath(projectId: string, clipIndex: number): Promise<string>;
         previewSession(): Promise<LivePreviewSession>;
         onPreviewSession(listener: (session: LivePreviewSession) => void): () => void;
+        onPreviewFrame(listener: (frame: SharedLivePreviewFrame) => void): () => void;
         onChanged(listener: (projectId: string) => void): () => void;
       };
       results: {

@@ -63,6 +63,7 @@ Comma lists download several at once, e.g. `DIRECTOR_LLMS=qwen3vl-8b-fp8,qwen3vl
 | `MARTINISHOT_REF` | `main` | Branch or tag of the Martini Shot nodes |
 | `COMFYUI_REF` | the tested version | `master` for the newest ComfyUI |
 | `COMFYUI_ARGS` | | Extra ComfyUI flags |
+| `SAGE_ATTENTION` | `1` | Faster video rendering. The first start spends about 10 more minutes building it; `0` turns it off |
 | `SKIP_MODELS` | `0` | `1` installs without downloading models (a quick, cheap test) |
 | `HF_TOKEN` | | Only for gated Hugging Face models |
 | `MARTINI_SHOT_TOKEN` | | Recommended secret for Martini Shot's project-file API |
