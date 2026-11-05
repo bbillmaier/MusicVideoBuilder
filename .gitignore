@@ -21,3 +21,8 @@ Thumbs.db
 desktop.ini
 .vscode/
 .idea/
+
+# Internal planning documents (kept locally, not published)
+tickets/
+design_docs/
+design_mockups/
