@@ -44,10 +44,10 @@ export class RemoteRenderStaging {
   }
   private query(file: string): string { return `?path=${encodeURIComponent(safeRemotePath(file))}`; }
   async checkConnection(): Promise<void> {
-    if (!this.token) throw new Error("Remote rendering needs a Martini Shot file API token.");
     const stats = await this.request("/system_stats"); await stats.body?.cancel();
-    const info = await (await this.request("/martini/fs/info")).json() as { api?: unknown };
+    const info = await (await this.request("/martini/fs/info")).json() as { api?: unknown; token_required?: unknown };
     if (typeof info.api !== "number" || info.api > FILE_API_VERSION) throw new Error("Remote ComfyUI has a newer incompatible Martini Shot file API.");
+    if (info.token_required === true && !this.token) throw new Error("Remote ComfyUI requires a Martini Shot file API token.");
   }
   async stat(file: string): Promise<{ exists: boolean; type?: string; size?: number }> { return (await (await this.request(`/martini/fs/stat${this.query(file)}`)).json()) as { exists: boolean; type?: string; size?: number }; }
   async hash(file: string): Promise<{ sha256: string; size: number } | null> { const stat = await this.stat(file); if (!stat.exists) return null; return (await (await this.request(`/martini/fs/hash${this.query(file)}`)).json()) as { sha256: string; size: number }; }

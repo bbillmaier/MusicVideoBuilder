@@ -88,11 +88,11 @@
     },
     "vram_cleanup_before_sample": {
       "class_type": "VRAMCleanup",
-      "inputs": { "anything": ["ref2v", 1], "offload_model": true, "offload_cache": true }
+      "inputs": { "anything": ["ref2v", 1], "offload_model": "{{vramCleanup}}", "offload_cache": "{{vramCleanup}}" }
     },
     "ram_cleanup_before_sample": {
       "class_type": "RAMCleanup",
-      "inputs": { "anything": ["vram_cleanup_before_sample", 0], "clean_file_cache": true, "clean_processes": true, "clean_dlls": true, "retry_times": 3 }
+      "inputs": { "anything": ["vram_cleanup_before_sample", 0], "clean_file_cache": "{{ramCleanup}}", "clean_processes": "{{ramCleanup}}", "clean_dlls": "{{ramCleanup}}", "retry_times": 3 }
     },
     "sampler": {
       "class_type": "KSamplerSelect",
@@ -118,11 +118,11 @@
     },
     "vram_cleanup_after_sample": {
       "class_type": "VRAMCleanup",
-      "inputs": { "anything": ["pass_1", 1], "offload_model": true, "offload_cache": true }
+      "inputs": { "anything": ["pass_1", 1], "offload_model": "{{vramCleanup}}", "offload_cache": "{{vramCleanup}}" }
     },
     "ram_cleanup_after_sample": {
       "class_type": "RAMCleanup",
-      "inputs": { "anything": ["vram_cleanup_after_sample", 0], "clean_file_cache": true, "clean_processes": true, "clean_dlls": true, "retry_times": 3 }
+      "inputs": { "anything": ["vram_cleanup_after_sample", 0], "clean_file_cache": "{{ramCleanup}}", "clean_processes": "{{ramCleanup}}", "clean_dlls": "{{ramCleanup}}", "retry_times": 3 }
     },
     "decode": {
       "class_type": "VAEDecode",
@@ -130,11 +130,11 @@
     },
     "vram_cleanup_after_decode": {
       "class_type": "VRAMCleanup",
-      "inputs": { "anything": ["decode", 0], "offload_model": true, "offload_cache": true }
+      "inputs": { "anything": ["decode", 0], "offload_model": "{{vramCleanup}}", "offload_cache": "{{vramCleanup}}" }
     },
     "ram_cleanup_after_decode": {
       "class_type": "RAMCleanup",
-      "inputs": { "anything": ["vram_cleanup_after_decode", 0], "clean_file_cache": true, "clean_processes": true, "clean_dlls": true, "retry_times": 3 }
+      "inputs": { "anything": ["vram_cleanup_after_decode", 0], "clean_file_cache": "{{ramCleanup}}", "clean_processes": "{{ramCleanup}}", "clean_dlls": "{{ramCleanup}}", "retry_times": 3 }
     },
     "trim": {
       "class_type": "MiniMaxH3TrimOverlap",

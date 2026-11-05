@@ -178,7 +178,7 @@ test("workflow templates: placeholders fill, render package passes as a literal 
 
   const render = JSON.parse(fs.readFileSync(path.join(dir, "05-render-next-clip.json"), "utf-8"));
   const renderPackage = { project: "static-heart", folder: "E:\\out\\martini_shot\\static-heart\\render-01", render_name: "render-01" };
-  const graph = applyTemplateValues(render.prompt, { render_package: renderPackage, loader_mode: "Next missing", clip_index: 3, noise_seed: 42, aspect_ratio: "9:16", render_megapixels: 1.25, livePreviews: false }) as Record<string, { class_type: string; inputs: Record<string, unknown> }>;
+  const graph = applyTemplateValues(render.prompt, { render_package: renderPackage, loader_mode: "Next missing", clip_index: 3, noise_seed: 42, aspect_ratio: "9:16", render_megapixels: 1.25, livePreviews: false, vramCleanup: false, ramCleanup: false }) as Record<string, { class_type: string; inputs: Record<string, unknown> }>;
   assert.deepEqual(graph.clip.inputs.render_package, { __value__: renderPackage });
   assert.equal(graph.clip.inputs.mode, "Next missing");
   assert.equal(Object.values(graph).filter((node) => node.class_type === "MartiniShotLoadRenderClip").length, 1);
@@ -191,6 +191,8 @@ test("workflow templates: placeholders fill, render package passes as a literal 
   assert.equal(Object.values(graph).filter((node) => node.class_type === "SamplerCustomAdvanced").length, 1);
   assert.equal(Object.values(graph).filter((node) => node.class_type === "VRAMCleanup").length, 3);
   assert.equal(Object.values(graph).filter((node) => node.class_type === "RAMCleanup").length, 3);
+  assert.equal(graph.vram_cleanup_before_sample.inputs.offload_model, false);
+  assert.equal(graph.ram_cleanup_before_sample.inputs.clean_file_cache, false);
   assert.deepEqual(graph.ram_cleanup_before_sample.inputs.anything, ["vram_cleanup_before_sample", 0]);
   assert.deepEqual(graph.pass_1.inputs.latent_image, ["ram_cleanup_before_sample", 0]);
   assert.deepEqual(graph.ram_cleanup_after_sample.inputs.anything, ["vram_cleanup_after_sample", 0]);
@@ -208,10 +210,24 @@ test("workflow templates: placeholders fill, render package passes as a literal 
   const revise = JSON.parse(fs.readFileSync(path.join(dir, "04b-revise-clip-prompt.json"), "utf-8"));
   const revision = applyTemplateValues(revise.prompt, {
     package_folder: "E:\\out\\martini_shot\\static-heart\\render-01", director_llm: "Qwen | q.safetensors",
-    clip_index: 18, revision_mode: "Apply manual direction", creative_text: "She leaves the booth and faces the window.", seed: 7,
+    clip_index: 18, revision_mode: "Try another take", creative_text: "closer on her hands", seed: 7,
+    changes: JSON.stringify({ refs: { outfit: "ref_ab12.png" }, propagate: [19, 20] }),
   }) as Record<string, { class_type: string; inputs: Record<string, unknown> }>;
   assert.equal(revision.revise.class_type, "MartiniShotReviseClipPrompt");
   assert.equal(revision.revise.inputs.clip_index, 18);
-  assert.equal(revision.revise.inputs.creative_text, "She leaves the booth and faces the window.");
+  assert.equal(revision.revise.inputs.creative_text, "closer on her hands");
+  assert.deepEqual(JSON.parse(revision.revise.inputs.changes as string).propagate, [19, 20]);
+  assert.deepEqual(revision.revise.inputs.llm, ["llm", 0]);
   assert.ok(!JSON.stringify(revision).includes("{{"));
+
+  // Shot settings and manual directions run the same node without loading the LLM.
+  const apply = JSON.parse(fs.readFileSync(path.join(dir, "04c-apply-clip-settings.json"), "utf-8"));
+  const settings = applyTemplateValues(apply.prompt, {
+    package_folder: "E:\\out\\martini_shot\\static-heart\\render-01", clip_index: 18, revision_mode: "Apply shot settings",
+    creative_text: "", seed: 7, changes: JSON.stringify({ lip_sync: false }),
+  }) as Record<string, { class_type: string; inputs: Record<string, unknown> }>;
+  assert.equal(settings.revise.class_type, "MartiniShotReviseClipPrompt");
+  assert.equal(settings.revise.inputs.mode, "Apply shot settings");
+  assert.ok(!("llm" in settings) && !("llm" in settings.revise.inputs));
+  assert.ok(!JSON.stringify(settings).includes("{{"));
 });

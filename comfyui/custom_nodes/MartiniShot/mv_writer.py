@@ -34,6 +34,7 @@ Rules:
 - You MAY describe how the scene's own light falls on the performer: its color, direction, reflections, and shadows on skin, hair, and clothing.
 - Do not describe the music. Do not write dialogue or lyrics.
 - Develop one principal action with natural secondary motion. Repeated rhythmic gestures are allowed; do not invent unrelated stunts merely to keep moving. Body mechanics are realistic.
+- When a Director's notes block contains CONSTRAINT PRIORITY, treat MUST and ENTERING/EXITING STATE as hard requirements. MAY ADD IF COMPATIBLE is optional and MUST NOT is prohibited. Do not let optional style or hooks replace a MUST action.
 
 Follow the output format exactly."""
 

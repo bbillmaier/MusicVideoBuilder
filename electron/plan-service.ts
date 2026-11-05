@@ -242,7 +242,10 @@ async function executePlan(runId: string, projectId: string, reroll: boolean, en
     // Evidence that this run wrote the plan: story_plan.json changed, or ComfyUI says it reused its in-memory result.
     const reusedByComfy = cachedNodes(run.messages).includes("plan");
     const after = existsSync(planFile) ? statSync(planFile).mtimeMs : 0;
-    if (!after || (!reusedByComfy && after <= before)) {
+    // A recovered remote file has the remote filesystem timestamp. Its clock may
+    // be behind this PC, so timestamp ordering is not valid cross-machine evidence.
+    const remoteRun = (await getMachineSettings()).executionDestination === "remote";
+    if (!after || (!remoteRun && !reusedByComfy && after <= before)) {
       throw new Error(`ComfyUI finished, but ${planFile} was not written by this run. Check that the ComfyUI output folder in Settings belongs to the running ComfyUI.`);
     }
     let raw: RawStoryPlan;

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import math
 import random
 from pathlib import Path
@@ -15,6 +16,7 @@ from .mv_nodes import MiniMaxH3MusicVideoDirector, MiniMaxH3MusicVideoPromptRevi
 from .mv_story import (CREATIVE_BRIEF_SYSTEM, build_creative_brief_message,
                        creative_direction_text, parse_creative_brief)
 from .dance_nodes import run_llm
+from .director_context import attach_context_to_shots, build_director_context
 from .video_nodes import LOADER_MODES, MiniMaxH3StitchSongSegments
 
 from .project_store import (find_requested_location, load_project, project_slug, read_state, requested_location_path,
@@ -65,9 +67,10 @@ def _cached(lines, llm, stage, message, temperature, tokens, seed, system):
     return response
 
 
-def _story_state(project, analysis, story, creative_direction, settings):
+def _story_state(project, analysis, story, creative_direction, settings, creative_contract=None):
     return {"project": project["name"], "analysis": analysis, "story": story,
-            "creative_direction": creative_direction, "settings": settings}
+            "creative_direction": creative_direction, "settings": settings,
+            "director_context": build_director_context(project["name"], analysis, story, creative_contract or {}, settings)}
 
 
 class MartiniShotProject:
@@ -158,11 +161,15 @@ class MartiniShotPlanStory:
         state = _story_state(project, analysis, story, direction, {
             "story_brief": story_brief, "story_wheel": bool(story_wheel), "min_locations": int(min_locations),
             "request_performer_location_images": bool(request_performer_location_images), "seed": seed,
-        })
+        }, creative)
         state["requested_locations"] = requested
         write_state(project, "story_plan.json", state)
+        write_state(project, "director_context.json", state["director_context"])
+        event_lines = [f"  {event['event']}: section {event['section']} (assigned deterministically)"
+                       for event in state["director_context"].get("required_events", ())]
         report = "\n".join([f"Martini Shot story plan: {len(analysis['sections'])} song sections."]
                              + (["", "Creative direction:"] + [f"  {line}" for line in direction.splitlines()] if direction else [])
+                              + (["", "Required event allocation:"] + event_lines if event_lines else [])
                              + (["", "Story:"] + story_lines if story_lines else [])
                              + (["", "Location observations:"] + evidence_lines if evidence_lines else [])
                              + (["", "Director cache:"] + lines if lines else [])
@@ -268,10 +275,12 @@ class MartiniShotBuildProductionPlan:
             max_shot_seconds=max_shot_seconds, hard_cuts_change_location=bool(hard_cuts_change_location),
             require_performer_location_image=True,
         )
+        context = copy.deepcopy(resolved_plan.get("director_context", {}))
+        attach_context_to_shots(shots, context)
         production = {"project": resolved_plan["project"], "analysis": resolved_plan["analysis"], "shots": shots,
                       "creative_direction": resolved_plan.get("creative_direction", ""),
                       "story_brief": resolved_plan.get("settings", {}).get("story_brief", ""),
-                      "dance_style": dance_style, "seed": int(seed)}
+                       "dance_style": dance_style, "seed": int(seed), "director_context": context}
         return production, tuple(shots), "\n".join([f"Built deterministic production plan: {len(shots)} shots.", ""] + why)
 
 
@@ -319,6 +328,18 @@ class MartiniShotWritePromptPackage:
             validate_actions=bool(validate_actions),
         )
         prompts, report, responses, folder, _timeline = result
+        context = copy.deepcopy(production_plan.get("director_context", {}))
+        context["render_package"] = {"folder": folder, "render_name": render_name}
+        # This is the audit copy: preserve the compact cards and the decisions made by the optional polish passes,
+        # without saving the enormous transient prompt/response text a second time.
+        context["production_shots"] = [{
+            "number": index, "section": shot.get("_section"), "scene": shot.get("scene_type"),
+            "location": shot.get("_place"), "action": shot.get("scene_description"),
+            "transition": shot.get("transition"), "camera": shot.get("camera_text") or shot.get("camera"),
+            "style": shot.get("style_bible", ""), "context_card": shot.get("_director_context_card", ""),
+            "required_events": shot.get("_required_events", []),
+        } for index, shot in enumerate(shots, start=1)]
+        Path(folder, "director_context.json").write_text(json.dumps(context, indent=2), encoding="utf-8")
         package = {"project": project["name"], "folder": folder, "render_name": render_name}
         write_state(project, "render_package.json", package)
         report = "\n".join(["Martini Shot prompt package written."] + (["Polish:"] + polish if polish else []) + ["", report])

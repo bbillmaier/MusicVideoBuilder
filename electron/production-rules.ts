@@ -87,7 +87,7 @@ export function parseProductionReport(report: string): { shotCount: number; shot
       else if (part.startsWith("subject: ")) { shot.subject = part.slice(9); last = null; }
       else if (part.startsWith("story action: ")) { shot.storyAction = part.slice(14); last = "storyAction"; }
       else if (part.startsWith("action: ")) { shot.action = part.slice(8); last = "action"; }
-      else if (/^(TRIGGER |hard cut moves to |story action superseded|invented location$|B-roll-only location$)/.test(part)) { shot.flags.push(part); last = null; }
+      else if (/^(TRIGGER |hard cut moves to |same location: |story action superseded|invented location$|B-roll-only location$)/.test(part)) { shot.flags.push(part); last = null; }
       else if (last) shot[last] += ` | ${part}`; // an action that itself contained " | "
       else shot.flags.push(part);
     }

@@ -11,6 +11,9 @@ export type MachineSettings = {
   keepIntermediateOutputs: boolean;
   /** Optional rough sampler previews sent only to this local Martini Shot window. */
   livePreviews: boolean;
+  /** Render-graph and post-workflow memory cleanup; disabling favors queue throughput over idle memory. */
+  vramCleanup: boolean;
+  ramCleanup: boolean;
   /** The running ComfyUI's output folder. Martini Shot projects live in <this>\martini_shot\<project-slug>. */
   comfyOutputDir: string;
   /** Retained only to safely migrate Ticket 08 settings; projects are always local. */
@@ -33,6 +36,8 @@ const defaults = (): MachineSettings => ({
   lora: "", loraStrength: 1, steps: 30, cfg: 6, seedMode: "random", resolution: "1280 × 720 (720p)", fps: 24,
   outputFormat: "MP4 (H.264)", dynamicLength: true, higherQuality: false, keepIntermediateOutputs: false,
   livePreviews: false,
+  vramCleanup: true,
+  ramCleanup: true,
   comfyOutputDir: process.env.COMFYUI_OUTPUT_DIR || String.raw`E:\LTX2-Install\ComfyUI_windows_portable\ComfyUI\output`,
   comfyLocation: "local",
   fileApiToken: "",

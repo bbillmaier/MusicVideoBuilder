@@ -241,6 +241,8 @@ def build_style_message(brief: str, dance_style: str, lyrics: str, locations: li
     else:
         parts.append("Do not invent recurring motifs, cutaways, props, new actions, or surreal imagery beyond explicit "
                      "user creative direction. Describe only palette, lighting, lens, film feel, and atmosphere.")
+    creative_direction = "\n".join(line for line in creative_direction.splitlines()
+                                    if not line.lower().startswith("required one-off event:"))
     if creative_direction:
         parts.append("User creative direction:\n" + creative_direction)
     return "\n\n".join(parts + _context_lines(brief, dance_style, lyrics, locations))
@@ -270,9 +272,11 @@ def build_camera_message(shot_rows: list[str], style: str) -> str:
 
 def build_motif_message(section_rows: list[str], brief: str, dance_style: str, lyrics: str,
                         creative_direction: str = "") -> str:
+    # Required events are allocated deterministically to a production shot.  Keeping them out of this
+    # optional-hook call prevents a small model from duplicating or relocating the event.
+    creative_direction = "\n".join(line for line in creative_direction.splitlines()
+                                    if not line.lower().startswith("required one-off event:"))
     extra = ["User creative direction:\n" + creative_direction] if creative_direction else []
-    if "Required one-off event:" in creative_direction:
-        extra.append("Repeat the exact Required one-off event phrase in exactly one chosen section hook so it can be reported.")
     return "\n\n".join(["Give each song section a visual hook."] + extra + _context_lines(brief, dance_style, lyrics, [])
                        + ["Sections:\n" + "\n".join(section_rows)])
 

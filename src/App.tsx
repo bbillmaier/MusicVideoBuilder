@@ -187,16 +187,26 @@ function Settings({ database, comfy, checking, onRecheck, onOpenComfy }: { datab
       </section>
 
       <section className="panel setting-card">
-        <div className="setting-head"><Icon.film size={22} aria-hidden /><div><h2>Rendering</h2><p>The workflow is fixed for reliable local rendering. This option applies to every future clip on this computer.</p></div></div>
+        <div className="setting-head"><Icon.film size={22} aria-hidden /><div><h2>Rendering</h2><p>These defaults apply to both local and remote clip renders.</p></div></div>
         <label className="control toggle-row">
           <Icon.render size={20} className="control-icon" aria-hidden />
           <div className="control-text"><b>Live sampler previews</b><p>Show rough, updating MiniMax previews while a clip is rendering. Uses a small extra amount of GPU memory; leave off for the most conservative memory behavior.</p></div>
           <Switch checked={settings.livePreviews} onChange={(livePreviews) => update("livePreviews", livePreviews)} />
         </label>
+        <label className="control toggle-row">
+          <Icon.render size={20} className="control-icon" aria-hidden />
+          <div className="control-text"><b>VRAM cleanup between render stages</b><p>Turn off to keep models resident between queued clips for faster throughput. Uses substantially more GPU memory and skips the post-job GPU memory release.</p></div>
+          <Switch checked={settings.vramCleanup} onChange={(vramCleanup) => update("vramCleanup", vramCleanup)} />
+        </label>
+        <label className="control toggle-row">
+          <Icon.render size={20} className="control-icon" aria-hidden />
+          <div className="control-text"><b>RAM cleanup between render stages</b><p>Turn off to preserve host-side caches between queued clips. Use the default when memory is constrained.</p></div>
+          <Switch checked={settings.ramCleanup} onChange={(ramCleanup) => update("ramCleanup", ramCleanup)} />
+        </label>
         <ul className="fixed-list">
           <li>Clips render with the MiniMax render workflow included in the app (<code>05-render-next-clip.json</code>), using its models, sampler passes, and upscaler.</li>
-          <li>One clip per ComfyUI run. The next clip is sent only after the previous run and its memory cleanup have finished.</li>
-          <li>After every ComfyUI run, Martini Shot asks ComfyUI to unload models and free memory.</li>
+          <li>One clip per ComfyUI run. The next clip is sent only after the prior workflow is complete.</li>
+          <li>With VRAM cleanup enabled, Martini Shot asks ComfyUI to unload models and free memory after each workflow.</li>
           <li>The final video joins the rendered clips in order with the original song.</li>
         </ul>
       </section>

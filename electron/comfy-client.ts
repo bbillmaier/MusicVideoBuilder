@@ -9,7 +9,7 @@ export type WorkflowRun = { job: ComfyJob; outputs: unknown; messages: unknown[]
 export type WorkflowProgress = { phase: "queued" | "running" | "cleanup"; queuePosition?: number };
 /** What Martini Shot actually observed about a POST /free cleanup. It never proves memory was physically released. */
 export type CleanupEvidence = {
-  status: "accepted" | "completed" | "failed";
+  status: "accepted" | "completed" | "failed" | "skipped";
   /** ComfyUI answered POST /free with HTTP 200. */
   acceptedAt: string | null;
   /** ComfyUI's queue was idle afterwards and /system_stats answered, so its worker has had its cleanup cycle. */
@@ -84,11 +84,12 @@ export async function comfyStatus(url?: string): Promise<ComfyStatus> {
     const response = await request(endpoint, "/system_stats");
     if (!response.ok) throw new Error(`ComfyUI returned HTTP ${response.status}.`);
     if (selectedRemote) {
-      if (!settings.remoteFileApiToken) throw new Error("Remote ComfyUI needs a Martini Shot file API token.");
       const info = await request(endpoint, "/martini/fs/info", { headers: { "X-Martini-Token": settings.remoteFileApiToken } });
       if (!info.ok) throw new Error(info.status === 403 ? "Remote Martini Shot file API rejected the request: wrong or missing token." : "Remote ComfyUI does not expose the Martini Shot file API.");
-      const api = (await info.json() as { api?: unknown }).api;
+      const body = await info.json() as { api?: unknown; token_required?: unknown };
+      const api = body.api;
       if (typeof api !== "number" || api > 1) throw new Error("Remote ComfyUI has a newer incompatible Martini Shot file API.");
+      if (body.token_required === true && !settings.remoteFileApiToken) throw new Error("Remote ComfyUI requires a Martini Shot file API token.");
     }
     return { connected: true, endpoint, message: selectedRemote ? "Remote ComfyUI worker is connected." : "ComfyUI is connected locally.", system: await response.json() };
   } catch (error) {
@@ -260,6 +261,10 @@ async function releaseMemory(endpoint: string, onCleanup?: (evidence: CleanupEvi
   return evidence;
 }
 
+function skippedCleanup(): CleanupEvidence {
+  return { status: "skipped", acceptedAt: null, completedAt: null, vramFreeBefore: null, vramFreeAfter: null, error: "VRAM cleanup is disabled in Settings." };
+}
+
 export async function runWorkflowTemplate(isDevelopment: boolean, name: string, values: Record<string, unknown>, projectId?: string,
   build?: (template: WorkflowTemplate) => Record<string, unknown>, options: WorkflowOptions = {}): Promise<WorkflowRun> {
   const settings = await getMachineSettings();
@@ -307,7 +312,8 @@ export async function runWorkflowTemplate(isDevelopment: boolean, name: string, 
     let cleanup: CleanupEvidence | null = null;
     if (promptId) {
       options.onProgress?.({ phase: "cleanup" });
-      cleanup = await releaseMemory(endpoint, onCleanup);
+      cleanup = settings.vramCleanup ? await releaseMemory(endpoint, onCleanup) : skippedCleanup();
+      if (!settings.vramCleanup) onCleanup(cleanup);
     }
     const partial = error instanceof ComfyWorkflowError ? error : null;
     throw new ComfyWorkflowError(message, promptId, partial?.outputs ?? null, partial?.messages ?? [], cleanup, false);
@@ -315,8 +321,9 @@ export async function runWorkflowTemplate(isDevelopment: boolean, name: string, 
   const completedAt = new Date().toISOString();
   await updateComfyJob(job.id, { status: "complete", report: JSON.stringify(result.outputs), completedAt, cleanupStatus: "pending" });
   options.onProgress?.({ phase: "cleanup" });
-  const cleanup = await releaseMemory(endpoint, onCleanup);
-  if (cleanup.status !== "completed") {
+  const cleanup = settings.vramCleanup ? await releaseMemory(endpoint, onCleanup) : skippedCleanup();
+  if (!settings.vramCleanup) onCleanup(cleanup);
+  if (cleanup.status !== "completed" && cleanup.status !== "skipped") {
     // The workflow itself finished; only the cleanup could not be confirmed. Callers decide whether to continue.
     throw new ComfyWorkflowError(`The workflow finished, but ComfyUI cleanup did not complete: ${cleanup.error}`, promptId, result.outputs, result.messages, cleanup, true);
   }
@@ -326,5 +333,6 @@ export async function runWorkflowTemplate(isDevelopment: boolean, name: string, 
 /** A standalone POST /free cycle (e.g. after recovering a render that finished while Martini Shot was closed). */
 export async function freeComfyMemory(endpointOverride?: string): Promise<CleanupEvidence> {
   const settings = await getMachineSettings();
+  if (!settings.vramCleanup) return skippedCleanup();
   return releaseMemory(endpointOverride ? comfyEndpoint(endpointOverride, "remote") : comfyEndpoint(settings.comfyUrl, "local"));
 }

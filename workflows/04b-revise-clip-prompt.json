@@ -1,7 +1,7 @@
 {
   "name": "04b-revise-clip-prompt.json",
   "stage": "revise_clip_prompt",
-  "description": "Retries the local LLM or applies a user-edited creative direction to exactly one existing prompt-package clip. It never replans the story or changes other prompts.",
+  "description": "Retries the local LLM (with an optional producer note and shot settings) or applies a user-edited creative direction to one existing prompt-package clip. Reference swaps may be carried into the clips that continue it. It never replans the story.",
   "prompt": {
     "llm": {
       "class_type": "MiniMaxH3PromptLLMLoader",
@@ -15,6 +15,7 @@
         "clip_index": "{{clip_index}}",
         "mode": "{{revision_mode}}",
         "creative_text": "{{creative_text}}",
+        "changes": "{{changes}}",
         "temperature": 0.8,
         "max_tokens": 1200,
         "seed": "{{seed}}"

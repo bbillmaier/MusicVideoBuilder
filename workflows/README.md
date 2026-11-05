@@ -43,6 +43,8 @@ Graph: `MartiniShotOpenProject` → `MartiniShotPlanStory` ← `MiniMaxH3PromptL
 
 Cache behavior comes from the nodes. Plan Story caches each LLM call on disk (`user/default/MiniMaxPrompBuilder/director_plan_cache`). With unchanged inputs and seed, every call is a `HIT` and the story is identical. `reset_plan_cache` clears that whole cache (for all projects) and picks a new random seed. The app reads the `Director cache:` lines of the report to say whether a plan was reused, partly reused, new, or rerolled. It stores the new seed from `story_plan.json`, so the next unchanged Create director plan reuses the rerolled plan. A plan counts as successful only if the report came back and `story_plan.json` was written by this run.
 
+Plan Story also writes `director_context.json`. This compact, versioned context packet holds the creative contract, one deterministic allocation for a required one-off event, and every section's entering state, required change, exit state, anchor, and anti-reset rule. It is an audit artifact, not an extra LLM call.
+
 The surreal motif weight is not a Plan Story input. It is saved with the Direction and used later by Write Prompt Package (`recurring_style_motif_weight`).
 
 ## 03-resolve-locations.json
@@ -91,6 +93,8 @@ Graph: `MartiniShotOpenProject` → `MartiniShotLoadStoryPlan` → `MartiniShotR
 | `{{motif_weight}}` | Direction's surreal motif weight (`recurring_style_motif_weight`) |
 
 Fixed values are the node defaults, which match the user's Auto Director workflow (`K-Pop`, 8 s target shots, `continue_bias` 0.5, `max_clip_frames` 260, `continuation_overlap` 22, …). `subject_description` is `the performer` and `pronoun` is `she / her` (node defaults; no per-project setting exists yet). `validate_actions` is on, so every clip's prompt gets an action-validation note in the report.
+
+Before the per-clip prompt calls, the production plan projects this context into a short card for every shot: `MUST`, entering/exiting state, `MAY ADD IF COMPATIBLE`, and `MUST NOT`. A required event is assigned to one deterministic usable shot, rather than left to the optional section-hook pass. The package folder retains a final `director_context.json`, including the polished shot cards, camera/style decisions, and event allocation used for that package.
 
 Build Production Plan raises "Cannot build production plan until requested performer location images are present" when the resolver still lists missing images, so a dead `<Picture>` reference can never be written. The app also refuses to start unless Locations shows every requested image as confirmed for the current plan, and unless the plan is fresh.
 

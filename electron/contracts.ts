@@ -310,7 +310,7 @@ export type ClipStatus = "pending" | "queued" | "rendering" | "rendered" | "fail
 /** One evidence row in the Director decisions panel. `tone` reflects real data only: info = neutral fact, none = not available. */
 export type DecisionRow = { label: string; value: string; tone: "ok" | "warn" | "fail" | "info" | "pending" | "none"; at: string | null };
 
-export type CleanupState = "not_requested" | "pending" | "accepted" | "completed" | "failed";
+export type CleanupState = "not_requested" | "pending" | "accepted" | "completed" | "failed" | "skipped";
 
 export type RenderAttempt = {
   id: string;
@@ -447,6 +447,62 @@ export type ClipDetail = {
   creativeRevision: number | null;
   attempts: RenderAttempt[];
   warnings: string[];
+  /** The clip's editable shot settings; null for packages written before Prompt Workshop sources. */
+  shot: ClipShotSettings | null;
+  /** Clips that continue this one without a hard cut (reference swaps are carried into them). */
+  followers: number[];
+  /** The clip this one continues from without a hard cut, or null after a hard cut. */
+  continuesFrom: number | null;
+  /** Clips whose videos must render again when this clip changes (it plus the clips that reuse its frames). */
+  rerenderWith: number[];
+};
+
+export type ClipRefRole = "person" | "outfit" | "location";
+export const CLIP_CAMERAS = ["Static full-body", "Static medium", "Slow push-in", "Slow arc", "Handheld follow", "LLM picks (experimental)", "Custom"] as const;
+export type ClipCamera = typeof CLIP_CAMERAS[number];
+
+/** A reference image already in the prompt package that a clip may switch to. */
+export type ClipRefOption = { role: ClipRefRole; file: string; name: string; locationText?: string };
+
+export type ClipShotSettings = {
+  scene: ClipMode;
+  /** "Continue" when the clip keeps the previous clip's camera. */
+  camera: ClipCamera | "Continue";
+  cameraText: string;
+  soundscape: string;
+  /** Dance clips use the package's fixed dance soundscape unless it is overridden. */
+  soundscapeEditable: boolean;
+  lipSync: boolean;
+  /** False when no sung lyrics fall inside the clip (or the package predates lip-sync editing). */
+  lipSyncAvailable: boolean;
+  ending: string;
+  endingOverridden: boolean;
+  locationText: string;
+  /** The clip's current reference file per swappable role. */
+  refs: Partial<Record<ClipRefRole, string>>;
+  options: ClipRefOption[];
+};
+
+/** Changes sent with a clip revision. Fields left out stay as they are. */
+export type ClipChanges = {
+  scene?: ClipMode;
+  camera?: { name: ClipCamera; text?: string };
+  soundscape?: string;
+  lipSync?: boolean;
+  ending?: string;
+  locationText?: string;
+  refs?: Partial<Record<ClipRefRole, string>>;
+};
+
+export type ClipRevisionMode = "Try another take" | "Apply manual direction" | "Apply shot settings";
+
+export type ClipRevisionRequest = {
+  mode: ClipRevisionMode;
+  /** Apply manual direction: the replacement action. Try another take: an optional note on what to change. */
+  creativeText: string;
+  changes?: ClipChanges;
+  /** Must be true when a reference swap is carried into following clips; the renderer asks the user first. */
+  confirmDownstream?: boolean;
 };
 
 // ----- Ticket 06: final stitch, results, and the autonomous-director report --------------------------------

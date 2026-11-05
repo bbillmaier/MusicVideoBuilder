@@ -564,7 +564,7 @@ class MiniMaxH3MusicVideoDirector:
             message = build_clip_message(
                 scene_type=scene, labels=labels_text(refs, subject_description, pronoun),
                 scene_description=shot.get("scene_description", ""),
-                llm_notes=shot.get("llm_notes", "") + (f" Visual style of the whole video: {shot['style_bible']}"
+                llm_notes=(shot.get("_director_context_card", "") + "\n" + shot.get("llm_notes", "")).strip() + (f" Visual style of the whole video: {shot['style_bible']}"
                                                        if shot.get("style_bible") else ""),
                 style_seed=styles.get(shot["style"]), style_name=shot["style"],
                 location_text=_clean(shot.get("location_description")),
@@ -684,6 +684,17 @@ class MiniMaxH3MusicVideoDirector:
                 "style_bible": shot.get("style_bible", ""),
                 "ask_camera": ask_camera,
                 "response": response,
+                # inputs the Produce page needs to edit this clip later without replanning
+                "base_message": message,
+                "llm_notes": shot.get("llm_notes", ""),
+                "camera_name": ("Continue" if clip["transition"] == "Continue" and previous_camera else
+                                "Custom" if shot.get("camera_text") else
+                                camera if camera in CAMERA_PRESETS else LLM_CAMERA),
+                "beat_sync": bool(sync_motion_to_beat),
+                "dance_soundscape": dance_soundscape,
+                "lip_sync_option": (lip_sync_paragraph(phrases, _clean(lyrics_language) or "English")
+                                    if phrases and scene != "B-roll" else ""),
+                "validate_actions": bool(validate_actions),
             }
             creative_file.write_text(json.dumps({str(key): value for key, value in sorted(creatives.items())}, indent=2), encoding="utf-8")
             prompts.append(f"===== segment_{clip['number']} (shot {section['number']}, {scene}) =====\n{prompt}")
@@ -739,28 +750,180 @@ def _creative_prompt(record: dict[str, Any], action: str, camera_sentence: str) 
     )
 
 
+REVISION_MODES = ["Try another take", "Apply manual direction", "Apply shot settings"]
+SWAP_ROLES = {"person": "performer", "outfit": "outfit", "location": "location"}
+PERFORMER_SCENES = ("Dance", "Performance", "Freeform")
+SCENE_BRIEFS = {
+    "Dance": "write choreography: named, style-appropriate dance moves performed to the music",
+    "Performance": "write a vocal performance: the performer sings to the camera with gestures that follow the phrasing",
+    "Freeform": "write one believable, continuous non-dance action in the place, not a dance",
+}
+REVISION_REQUEST = (
+    "REVISION REQUEST: Write a materially different alternative for this clip. Keep its assigned story role, "
+    "location, references, timing, incoming continuity, and ending compatible with the surrounding clips. "
+    "Use the same response format."
+)
+CAMERA_HEADER = "CAMERA: <one sentence: shot size, angle, and camera movement for this clip>"
+SOUNDSCAPE_HEADER = "SOUNDSCAPE: <one sentence of sounds happening in the scene, not the music, e.g. engine hum and wind>"
+
+
+def _base_message(record: dict[str, Any]) -> str:
+    """The message the package writer sent, without revision requests from earlier takes."""
+    return record.get("base_message") or record["message"].split("\n\nREVISION REQUEST:")[0]
+
+
+def _swap_ref(folder: Path, record: dict[str, Any], role: str, file: Any) -> str:
+    """Points the clip's reference of this role at another image already in the package. Returns a note, or ''."""
+    if role not in SWAP_ROLES:
+        raise ValueError(f"'{role}' references can't be swapped; only the performer, outfit, and location can.")
+    if not isinstance(file, str) or Path(file).name != file or not file.lower().endswith(".png") or not (folder / file).is_file():
+        raise ValueError(f"{file!r} is not a reference image in this package.")
+    ref = next((r for r in record["refs"] if r.get("role") == role), None)
+    if ref is None:
+        raise ValueError(f"This clip has no {SWAP_ROLES[role]} reference to replace.")
+    if ref.get("file") == file:
+        return ""
+    ref["file"] = file
+    note = (f"<Subject {ref['subject']}> is now a different {SWAP_ROLES[role]} (see the attached image). "
+            "Do not rely on earlier descriptions of it.")
+    record.setdefault("producer_notes", {})[f"ref_{role}"] = note
+    return note
+
+
+def _apply_location_text(record: dict[str, Any], text: Any) -> bool:
+    text = _clean(text)
+    if text == _clean(record.get("location_text")):
+        return False
+    record["location_text"] = text
+    record.setdefault("producer_notes", {})["location"] = (f"Location details are now: {text}" if text
+                                                           else "Ignore the earlier location details.")
+    return True
+
+
+def _apply_shot_changes(folder: Path, record: dict[str, Any], changes: dict[str, Any],
+                        creatives: dict[int, dict[str, Any]], take: bool) -> list[str]:
+    """Applies the Produce page's shot settings to one clip record. Returns what changed, for the report.
+
+    Each change also leaves a producer note, so every later take on this clip still follows it."""
+    done: list[str] = []
+    notes = record.setdefault("producer_notes", {})
+    scene = changes.get("scene")
+    if scene and scene != record["scene"]:
+        if not take:
+            raise ValueError("Changing the scene type needs a new take, so the LLM can rewrite the action for it.")
+        if scene not in PERFORMER_SCENES or record["scene"] not in PERFORMER_SCENES:
+            raise ValueError("The scene type can change only between Dance, Performance, and Freeform; B-roll uses different references.")
+        old = record["scene"]
+        record["scene"] = scene
+        audio = dict(record["audio"])
+        audio["sync_motion_to_beat"] = bool(record.get("beat_sync", audio.get("sync_motion_to_beat"))) and scene in ("Dance", "Performance")
+        record["audio"] = audio
+        if scene == "Dance" and not record.get("soundscape_locked"):
+            record["soundscape"] = record.get("dance_soundscape") or next(
+                (c.get("soundscape", "") for c in creatives.values() if c.get("scene") == "Dance"), record.get("soundscape", ""))
+        notes["scene"] = f"The scene type is now {scene}, not {old}: {SCENE_BRIEFS[scene]}. Ignore instructions above that only fit a {old} clip."
+        done.append(f"scene type {old} -> {scene}")
+
+    for role, file in (changes.get("refs") or {}).items():
+        if _swap_ref(folder, record, role, file):
+            done.append(f"{SWAP_ROLES[role]} reference -> {file}")
+    if "location_text" in changes and _apply_location_text(record, changes["location_text"]):
+        done.append("location details")
+
+    camera = changes.get("camera")
+    if camera:
+        name, text = camera.get("name"), _clean(camera.get("text"))
+        if name in CAMERA_PRESETS:
+            sentence, size, ask = CAMERA_PRESETS[name][1].format(**_pronoun_forms(record["pronoun"])), CAMERA_PRESETS[name][0], False
+        elif name == "Custom":
+            if not text:
+                raise ValueError("Describe the custom camera first.")
+            sentence, size, ask = _sentence(text), "", False
+        elif name == LLM_CAMERA:
+            if not take:
+                raise ValueError("Letting the LLM pick the camera needs a new take.")
+            sentence, size, ask = record.get("camera_sentence", ""), "", True
+        else:
+            raise ValueError(f"Unknown camera choice: {name}.")
+        if name != record.get("camera_name") or (not ask and sentence != record.get("camera_sentence")):
+            record.update(camera_sentence=sentence, shot_size=size, ask_camera=ask, camera_name=name)
+            notes["camera"] = ("Choose a new camera for this clip yourself: shot size, angle, and movement." if ask else
+                               f"The camera is now: {sentence} Stage the action so its important movements stay readable in this view.")
+            done.append(f"camera -> {name}")
+
+    if "lip_sync" in changes:
+        want, has = bool(changes["lip_sync"]), bool(record.get("lip_sync_text"))
+        if want and record["scene"] == "B-roll":
+            raise ValueError("B-roll clips have no performer to lip sync.")
+        if want and not has:
+            text = record.get("lip_sync_saved") or record.get("lip_sync_option")
+            if not text:
+                raise ValueError("Lip sync can't be turned on: no sung lyrics fall inside this clip, or the package was written before lip-sync editing.")
+            record["lip_sync_text"] = text
+            notes["lip_sync"] = ("The performer sings along to the lyrics in this clip. During sung lines keep the face toward "
+                                 "the camera and favor body, arm, and step movements over turning away.")
+            done.append("lip sync on")
+        elif has and not want:
+            record["lip_sync_saved"], record["lip_sync_text"] = record["lip_sync_text"], ""
+            notes["lip_sync"] = "The performer does not sing in this clip; ignore any lip-sync instructions above."
+            done.append("lip sync off")
+
+    if "soundscape" in changes:
+        text = _clean(changes["soundscape"])
+        if text != _clean(record.get("soundscape")):
+            record["soundscape"], record["soundscape_locked"] = text, True
+            done.append("soundscape")
+
+    if "ending" in changes:
+        text = _clean(changes["ending"])
+        if text != record.get("ending_override", ""):
+            if text:
+                record["ending_override"] = record["parsed"]["ending"] = text
+                notes["ending"] = f"The clip MUST end in this state: {text}"
+            else:
+                record.pop("ending_override", None)
+                notes.pop("ending", None)
+            done.append("ending state")
+    return done
+
+
+def _manifest_refs(record: dict[str, Any]) -> list[dict[str, str]]:
+    return [{"socket": f"ref_image_{r['picture'] - 1}", "file": r["file"]} for r in record["refs"] if r.get("file")]
+
+
 class MiniMaxH3MusicVideoPromptRevision:
-    """Retry or manually replace one clip's creative direction without changing the director plan."""
+    """Retry, hand-edit, or adjust the shot settings of one clip without changing the director plan.
+
+    Reference swaps can also be carried into the clips listed in changes["propagate"] (the clips that continue
+    this one), so an outfit or performer change does not flip back mid-shot."""
 
     @classmethod
     def INPUT_TYPES(cls):
-        return {"required": {
-            "folder": ("STRING", {"default": "music_videos/video"}),
-            "llm": ("H3_PROMPT_LLM",),
-            "clip_index": ("INT", {"default": 1, "min": 1, "max": 999}),
-            "mode": (["Try another take", "Apply manual direction"],),
-            "creative_text": ("STRING", multiline("Required for Apply manual direction; ignored for Try another take.")),
-            "temperature": ("FLOAT", {"default": 0.8, "min": 0.01, "max": 2.0, "step": 0.01}),
-            "max_tokens": ("INT", {"default": 1200, "min": 128, "max": 8192}),
-            "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFF}),
-        }}
+        return {
+            "required": {
+                "folder": ("STRING", {"default": "music_videos/video"}),
+                "clip_index": ("INT", {"default": 1, "min": 1, "max": 999}),
+                "mode": (REVISION_MODES,),
+                "creative_text": ("STRING", multiline(
+                    "Apply manual direction: the replacement action. Try another take: an optional note on what to change.")),
+                "temperature": ("FLOAT", {"default": 0.8, "min": 0.01, "max": 2.0, "step": 0.01}),
+                "max_tokens": ("INT", {"default": 1200, "min": 128, "max": 8192}),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFF}),
+            },
+            "optional": {
+                "llm": ("H3_PROMPT_LLM", {"tooltip": "Needed for Try another take only."}),
+                "changes": ("STRING", multiline(
+                    'JSON shot settings, e.g. {"camera": {"name": "Static medium"}, "lip_sync": false, '
+                    '"refs": {"outfit": "ref_ab12.png"}, "propagate": [6, 7]}.')),
+            },
+        }
 
     RETURN_TYPES = ("STRING", "STRING", "STRING")
     RETURN_NAMES = ("prompt", "creative_text", "report")
     FUNCTION = "revise"
     CATEGORY = MV_CATEGORY
 
-    def revise(self, folder, llm, clip_index, mode, creative_text, temperature, max_tokens, seed):
+    def revise(self, folder, clip_index, mode, creative_text, temperature, max_tokens, seed, llm=None, changes=""):
         path = resolve_folder(folder)
         manifest = load_manifest(path)
         segments = _manifest_segments(path, manifest)
@@ -772,41 +935,129 @@ class MiniMaxH3MusicVideoPromptRevision:
         record = creatives.get(index)
         if not record:
             raise FileNotFoundError("This package has no editable clip source. Write a fresh prompt package first.")
+        try:
+            changes = json.loads(changes) if _clean(changes) else {}
+        except json.JSONDecodeError as error:
+            raise ValueError(f"changes is not valid JSON: {error}") from error
+        if not isinstance(changes, dict):
+            raise ValueError("changes must be a JSON object.")
+        take = mode == REVISION_MODES[0]
+        if take and llm is None:
+            raise ValueError("Try another take needs the llm input connected.")
 
+        done = _apply_shot_changes(path, record, changes, creatives, take)
+        state_file = path / STATE_NAME
+        states = load_states(state_file, path, segments)
         warnings: list[str] = []
-        if mode == "Try another take":
+        if take:
+            base = _base_message(record)
+            record["base_message"] = base
+            message = base + "\n\n" + REVISION_REQUEST
+            if record.get("producer_notes"):
+                message += "\n\nPRODUCER CHANGES (these override anything above):\n" + "\n".join(
+                    f"- {note}" for note in record["producer_notes"].values())
+            direction = _clean(creative_text)
+            if direction:
+                message += f"\n\nPRODUCER DIRECTION for this take (follow it closely): {direction}"
+                done.append(f"direction: {direction}")
+            extra = ([CAMERA_HEADER] if record.get("ask_camera") and "\nCAMERA:" not in base else []) + (
+                [SOUNDSCAPE_HEADER] if record["scene"] != "Dance" and "\nSOUNDSCAPE:" not in base else [])
+            if extra:
+                message += "\n\nAlso include these headers after ACTION:\n" + "\n".join(extra)
             refs = _creative_refs(path, record)
             image_kwargs, _image_notes = _prepare_llm_images(llm, refs, True)
-            retry_message = record["message"] + (
-                "\n\nREVISION REQUEST: Write a materially different alternative for this clip. Keep its assigned story role, "
-                "location, references, timing, incoming continuity, and ending compatible with the surrounding clips. "
-                "Use the same response format."
-            )
-            response = run_llm(llm, retry_message, image_kwargs, temperature, max_tokens,
-                               int(seed) + index + int(record.get("revision", 0)) * 1009, system_prompt(record["scene"]))
+            run_seed = int(seed) + index + int(record.get("revision", 0)) * 1009
+            response = run_llm(llm, message, image_kwargs, temperature, max_tokens, run_seed, system_prompt(record["scene"]))
             parsed, warnings = parse_clip_response(response, record["scene"])
+            if record.get("validate_actions") and parsed["requirements"]:
+                # the same check the package writer runs, with one repair attempt
+                evidence = parse_evidence_text(record.get("llm_notes", ""))
+                requirements = parse_requirements(parsed["requirements"])
+                conflicts, unknowns = validate_requirements(requirements, evidence, states.get(index - 1), record["transition"])
+                warnings += ["NOTE: " + note for note in unknowns]
+                if conflicts:
+                    repaired = run_llm(llm, repair_message(message, response, conflicts), image_kwargs, temperature,
+                                       max_tokens, run_seed + 100000, system_prompt(record["scene"]))
+                    repaired_parsed, repaired_warnings = parse_clip_response(repaired, record["scene"])
+                    repaired_requirements = parse_requirements(repaired_parsed["requirements"])
+                    remaining, _unknowns = validate_requirements(repaired_requirements, evidence, states.get(index - 1),
+                                                                 record["transition"])
+                    if not remaining:
+                        response, parsed, requirements = repaired, repaired_parsed, repaired_requirements
+                        warnings += ["NOTE: repaired action validation: " + note for note in conflicts] + repaired_warnings
+                    else:
+                        warnings += ["WARNING: action validation could not repair: " + note for note in remaining]
+                parsed["requirements"] = requirements
             action, next_plan = split_lookahead(parsed["action"], float(record.get("clip_seconds", 0.0)))
-            camera_sentence = record["camera_sentence"]
             if record.get("ask_camera"):
-                camera_sentence = _sentence(parsed["camera"]) if parsed.get("camera") else camera_sentence
-            record.update({"message": retry_message, "response": response, "parsed": parsed, "action": action,
-                           "next_plan": next_plan, "camera_sentence": camera_sentence})
-            report_head = f"Clip {index}: local LLM wrote a new take; the story plan and other prompts were unchanged."
-        else:
+                record["camera_sentence"] = (_sentence(parsed["camera"]) if parsed.get("camera")
+                                             else record.get("camera_sentence") or "The camera holds a steady shot.")
+            if record["scene"] != "Dance" and parsed.get("soundscape") and not record.get("soundscape_locked"):
+                record["soundscape"] = parsed["soundscape"]
+            if record.get("ending_override"):
+                parsed["ending"] = record["ending_override"]
+            record.update({"message": message, "response": response, "parsed": parsed, "action": action, "next_plan": next_plan})
+            report_head = f"Clip {index}: local LLM wrote a new take; the story plan was unchanged."
+        elif mode == REVISION_MODES[1]:
             action = _clean(creative_text)
             if not action:
                 raise ValueError("Enter a replacement creative direction before applying it.")
             record["action"] = action
             record["response"] = "Manual creative-direction override."
-            report_head = f"Clip {index}: manual creative direction applied; the story plan and other prompts were unchanged."
+            report_head = f"Clip {index}: manual creative direction applied; the story plan was unchanged."
+        else:
+            if not done:
+                raise ValueError("Nothing to apply: the shot settings match the current clip.")
+            report_head = f"Clip {index}: shot settings applied without the LLM; the story plan was unchanged."
 
         prompt, prompt_warnings = _creative_prompt(record, record["action"], record["camera_sentence"])
         record["revision"] = int(record.get("revision", 0)) + 1
         segment = segments[index - 1]
         (path / segment["prompt_file"]).write_text(prompt, encoding="utf-8")
         creatives[index] = record
+        segment["references"] = _manifest_refs(record)
+
+        # carry reference swaps into the clips that continue this one, so the shot does not change mid-motion
+        carried = []
+        for other in changes.get("propagate") or ():
+            other = int(other)
+            if other == index or not 1 <= other <= len(segments):
+                raise ValueError(f"Clip {other} can't take this clip's changes.")
+            follower = creatives.get(other)
+            if not follower:
+                warnings.append(f"WARNING: clip {other} has no editable source, so it keeps its old references.")
+                continue
+            touched = False
+            for role, file in (changes.get("refs") or {}).items():
+                if any(r.get("role") == role for r in follower["refs"]):
+                    touched = bool(_swap_ref(path, follower, role, file)) or touched
+            if "location_text" in changes and any(r.get("role") == "location" for r in follower["refs"]):
+                touched = _apply_location_text(follower, changes["location_text"]) or touched
+            if touched:
+                follower_prompt, _ = _creative_prompt(follower, follower["action"], follower["camera_sentence"])
+                (path / segments[other - 1]["prompt_file"]).write_text(follower_prompt, encoding="utf-8")
+                segments[other - 1]["references"] = _manifest_refs(follower)
+                carried.append(other)
+
         creative_file.write_text(json.dumps({str(key): value for key, value in sorted(creatives.items())}, indent=2), encoding="utf-8")
-        report = "\n".join([report_head, f"Prompt rewritten: {segment['prompt_file']}", f"Revision: {record['revision']}"] + warnings + prompt_warnings)
+        if manifest.get("version", 1) >= 2:
+            (path / MANIFEST_NAME).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        # the next clip's context reads this one's action and ending state from llm_state.json
+        next_is_cut = index == len(segments) or segments[index].get("transition") == "Hard cut"
+        state = dict(states.get(index, {}))
+        state.update({
+            "action": record["action"], "ending": record["parsed"].get("ending", ""), "camera": record["camera_sentence"],
+            "next_plan": "" if next_is_cut else record.get("next_plan", ""),
+            "summary": f"Shot {segment['section']} ({record['scene']}): {record['parsed'].get('summary', '')}",
+        })
+        states[index] = state
+        state_file.write_text(json.dumps({str(k): v for k, v in sorted(states.items())}, indent=2), encoding="utf-8")
+
+        report = "\n".join(
+            [report_head, f"Prompt rewritten: {segment['prompt_file']}", f"Revision: {record['revision']}"]
+            + ([f"Changed: {'; '.join(done)}"] if done else [])
+            + ([f"Carried into clip{'s' if len(carried) > 1 else ''} {', '.join(map(str, carried))}"] if carried else [])
+            + warnings + prompt_warnings)
         return prompt, record["action"], report
 
 

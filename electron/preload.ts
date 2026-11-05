@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type {
-  AssetChangeResult, AssetRole, ClipDetail, CreativeDirection, LocationPlaceResult, LocationsOverview, PlanOverview, ProduceOverview, ProjectDetail,
+  AssetChangeResult, AssetRole, ClipDetail, ClipRevisionRequest, CreativeDirection, LocationPlaceResult, LocationsOverview, PlanOverview, ProduceOverview, ProjectDetail,
   ProjectsOverview, RerenderRequest, RerenderResult, ResultsOverview, LivePreviewSession,
 } from "./contracts";
 import type { MachineSettings } from "./db";
@@ -91,9 +91,12 @@ contextBridge.exposeInMainWorld("martini", {
     retryClip: (projectId: string, clipIndex: number): Promise<ProduceOverview> => ipcRenderer.invoke("martini:produce-retry-clip", projectId, clipIndex),
     /** Director decisions, attempts, and the clip's prompt text (diagnostics only). */
     clipDetail: (projectId: string, clipIndex: number): Promise<ClipDetail> => ipcRenderer.invoke("martini:produce-clip-detail", projectId, clipIndex),
-    /** Retries or manually replaces one clip's local-LLM creative direction without re-planning the video. */
-    reviseClipPrompt: (projectId: string, clipIndex: number, mode: "Try another take" | "Apply manual direction", creativeText: string): Promise<ProduceOverview> =>
-      ipcRenderer.invoke("martini:produce-revise-clip-prompt", projectId, clipIndex, mode, creativeText),
+    /** Retries, hand-edits, or changes the shot settings of one clip without re-planning the video. */
+    reviseClipPrompt: (projectId: string, clipIndex: number, request: ClipRevisionRequest): Promise<ProduceOverview> =>
+      ipcRenderer.invoke("martini:produce-revise-clip-prompt", projectId, clipIndex, request),
+    /** Moves a rendered clip's video (and those that reuse its frames) to superseded and renders it again with a new seed. */
+    rerenderClip: (projectId: string, clipIndex: number, confirmed: true): Promise<ProduceOverview> =>
+      ipcRenderer.invoke("martini:produce-rerender-clip", projectId, clipIndex, confirmed),
     openFolder: (projectId: string): Promise<void> => ipcRenderer.invoke("martini:produce-open-folder", projectId),
     copyOutputPath: (projectId: string, clipIndex: number): Promise<string> => ipcRenderer.invoke("martini:produce-copy-output", projectId, clipIndex),
     previewSession: (): Promise<LivePreviewSession> => ipcRenderer.invoke("martini:produce-preview-session"),

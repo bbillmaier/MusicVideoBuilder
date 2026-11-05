@@ -8,7 +8,9 @@ import { randomInt, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { CLIP_CAMERAS } from "./contracts";
 import type {
+  ClipCamera, ClipChanges, ClipMode, ClipRefOption, ClipRefRole, ClipRevisionMode, ClipRevisionRequest, ClipShotSettings,
   ClipDetail, ClipStatus, CleanupState, DecisionRow, PackageRun, PackageRunStatus, PlanData, ProduceClip, ProduceEvent, ProduceOverview,
   PromptPackage, RenderAttempt, RenderQueueState, RerenderResult, TimelineSection, CreativeDirection, LivePreviewSession,
 } from "./contracts";
@@ -62,7 +64,14 @@ type QueueRow = {
   retry_clip: number | null; completed: number; status: RenderQueueState["status"]; stop_requested_at: string | null; message: string | null;
   created_at: string; finished_at: string | null;
 };
-type ClipMetaExtra = { camera?: string; role?: string; sectionLabel?: string; storyDriven?: boolean; flags?: string[]; matched?: boolean };
+type ClipMetaExtra = { camera?: string; role?: string; sectionLabel?: string; storyDriven?: boolean; flags?: string[]; matched?: boolean; subject?: string };
+/** One clip's entry in the package's clip_creatives.json (written by the Director, edited by the revision node). */
+type CreativeRecord = {
+  action?: unknown; revision?: unknown; scene?: unknown; camera_name?: unknown; camera_sentence?: unknown; ask_camera?: unknown;
+  soundscape?: unknown; dance_soundscape?: unknown; soundscape_locked?: unknown; lip_sync_text?: unknown; lip_sync_saved?: unknown;
+  lip_sync_option?: unknown; location_text?: unknown; ending_override?: unknown; parsed?: { ending?: unknown };
+  refs?: Array<{ role?: unknown; file?: unknown }>;
+};
 
 let development = false;
 let notify: (projectId: string) => void = () => undefined;
@@ -71,6 +80,16 @@ let notifyPreview: (session: LivePreviewSession) => void = () => undefined;
 const packageActivity = new Map<string, NonNullable<PackageRun["activity"]>>();
 const attemptPhase = new Map<string, NonNullable<RenderAttempt["phase"]>>();
 let gpuCache: { label: string | null; at: number } = { label: null, at: 0 };
+
+/** A remote node reports paths relative to its own output root. Convert only a
+ * proven `martini_shot/<this slug>` suffix back to the local authority. */
+function localProjectPath(project: { slug: string; projectPath: string }, value: string): string {
+  const normalized = value.replace(/\\/g, "/");
+  const marker = `/martini_shot/${project.slug}/`;
+  const index = normalized.toLowerCase().lastIndexOf(marker.toLowerCase());
+  if (index < 0) return value;
+  return path.join(project.projectPath, ...normalized.slice(index + marker.length).split("/").filter(Boolean));
+}
 
 export function configureProductionService(options: { isDevelopment: boolean; onChange(projectId: string): void; onPreviewSession(session: LivePreviewSession): void }): void {
   development = options.isDevelopment;
@@ -489,7 +508,8 @@ async function executePackage(runId: string, projectId: string, settings: Packag
     reports.production = previewText(outputs, "production_report") ?? "";
     reports.package = previewText(outputs, "package_report") ?? "";
     const ready = previewText(outputs, "ready_to_produce");
-    const folderText = (previewText(outputs, "package_folder") ?? "").trim();
+    const remoteFolderText = (previewText(outputs, "package_folder") ?? "").trim();
+    const folderText = localProjectPath(project, remoteFolderText);
     if (!reports.production || !reports.package || !folderText) throw new Error("ComfyUI finished, but the production-plan or prompt-package report was not in its results.");
     if (ready?.trim().toLowerCase() !== "true") throw new Error(`ComfyUI's location check did not report ready_to_produce. ${reports.resolve}`);
 
@@ -507,9 +527,17 @@ async function executePackage(runId: string, projectId: string, settings: Packag
       throw new Error(`ComfyUI finished, but ${packageFile} was not written by this run. Check that the ComfyUI output folder in Settings belongs to the running ComfyUI.`);
     }
     const saved = parseJson<{ folder?: unknown; project?: unknown }>(await fs.readFile(packageFile, "utf-8"));
-    if (!saved || typeof saved.folder !== "string" || !samePath(saved.folder, folderText)) throw new Error(`${packageFile} does not name the folder ComfyUI just wrote (${folderText}).`);
-    if (!isInside(project.projectPath, saved.folder)) throw new Error(`The prompt package folder ${saved.folder} is not inside the project folder.`);
-    const folder = path.resolve(saved.folder);
+    if (!saved || typeof saved.folder !== "string" || !samePath(localProjectPath(project, saved.folder), folderText)) throw new Error(`${packageFile} does not name the folder ComfyUI just wrote (${remoteFolderText}).`);
+    const savedFolder = saved.folder as string;
+    // Keep local artifacts local-authoritative so switching back to This PC
+    // later does not leave a remote machine path in the package manifest.
+    if (savedFolder !== localProjectPath(project, savedFolder)) {
+      saved.folder = localProjectPath(project, savedFolder);
+      await fs.writeFile(packageFile, JSON.stringify(saved, null, 2));
+    }
+    const localSavedFolder = localProjectPath(project, savedFolder);
+    if (!isInside(project.projectPath, localSavedFolder)) throw new Error(`The prompt package folder ${localSavedFolder} is not inside the project folder.`);
+    const folder = path.resolve(localSavedFolder);
     let manifestRaw: unknown;
     try { manifestRaw = JSON.parse(await fs.readFile(path.join(folder, "segments.json"), "utf-8")); }
     catch { throw new Error(`${path.join(folder, "segments.json")} is missing or unreadable.`); }
@@ -568,7 +596,7 @@ function extraMeta(meta: ClipMeta): ClipMetaExtra & { continuity: string } {
   const shot = meta.productionShot;
   return {
     continuity: meta.continuity, matched: meta.matched, camera: shot?.camera, role: shot?.role, sectionLabel: shot?.sectionLabel,
-    storyDriven: shot ? Boolean(shot.storyAction) : undefined, flags: shot?.flags,
+    storyDriven: shot ? Boolean(shot.storyAction) : undefined, flags: shot?.flags, subject: shot?.subject || undefined,
   };
 }
 
@@ -810,8 +838,15 @@ async function renderClip(queueId: string, projectId: string, packageRunId: stri
     }
     previewClientId = settings.livePreviews ? randomUUID() : undefined;
     if (previewClientId) notifyPreview({ projectId, clipIndex: clip.clip_index, endpoint, clientId: previewClientId });
+    // The local manifest stays authoritative and contains a local absolute path.
+    // The remote loader accepts an output-relative path, so send only a cloned
+    // wire value for this prompt; never rewrite the local render_package.json.
+    const remotePackage = remote ? {
+      ...renderPackage,
+      folder: `martini_shot/${projectIdentity(projectId).slug}/${path.relative(projectIdentity(projectId).projectPath, folder).split(path.sep).join("/")}`,
+    } : renderPackage;
     const values = {
-      render_package: renderPackage, loader_mode: mode, clip_index: clip.clip_index, noise_seed: seed,
+      render_package: remotePackage, loader_mode: mode, clip_index: clip.clip_index, noise_seed: seed,
       aspect_ratio: direction?.aspectRatio ?? "4:3", render_megapixels: direction?.renderMegapixels ?? 1,
     };
     let outputs: unknown;
@@ -926,10 +961,10 @@ export async function clipDetail(projectId: unknown, clipIndex: unknown): Promis
   const promptPath = path.join(pkg.folder, row.prompt_file);
   let prompt: string | null = null;
   if (isInside(pkg.folder, promptPath)) prompt = await fs.readFile(promptPath, "utf-8").catch(() => null);
-  const creativeSource = await fs.readFile(path.join(pkg.folder, "clip_creatives.json"), "utf-8")
-    .then((text) => parseJson<Record<string, { action?: unknown; revision?: unknown }>>(text))
-    .catch(() => null);
+  const creativeSource = await readCreatives(pkg.folder);
   const creative = creativeSource?.[String(index)];
+  const allRows = clipRows(pkgRow.id);
+  const chain = clipChain(allRows, index);
   decisions.push(prompt !== null
     ? { label: "Prompt written", value: `${row.prompt_file}${meta.storyDriven ? " — from the story plan's action" : ""}${meta.camera ? ` · camera: ${meta.camera}` : ""}`, tone: "ok", at: pkg.writtenAt }
     : { label: "Prompt written", value: `${row.prompt_file} is missing from the package folder`, tone: "fail", at: null });
@@ -955,18 +990,171 @@ export async function clipDetail(projectId: unknown, clipIndex: unknown): Promis
     index, decisions, prompt, attempts, warnings: notes,
     creativeText: typeof creative?.action === "string" ? creative.action : null,
     creativeRevision: typeof creative?.revision === "number" ? creative.revision : null,
+    shot: creative && creativeSource ? shotSettings(creative, refOptions(creativeSource, allRows)) : null,
+    followers: chain.followers, continuesFrom: chain.continuesFrom, rerenderWith: chain.rerenderWith,
   };
 }
 
-/** Changes one saved creative direction through ComfyUI. The existing story and package stay in place; only clips that inherit
- * motion from this one are invalidated for a later re-render. */
-export async function reviseClipPrompt(projectId: unknown, clipIndex: unknown, mode: unknown, creativeText: unknown): Promise<ProduceOverview> {
+// ----- Clip shot settings ----------------------------------------------------------------------------------
+
+const SWAP_ROLES: ClipRefRole[] = ["person", "outfit", "location"];
+const text = (value: unknown): string => (typeof value === "string" ? value : "");
+
+async function readCreatives(folder: string): Promise<Record<string, CreativeRecord> | null> {
+  return fs.readFile(path.join(folder, "clip_creatives.json"), "utf-8")
+    .then((source) => parseJson<Record<string, CreativeRecord>>(source))
+    .catch(() => null);
+}
+
+const joined = (transition: string | null) => transition === "Continue" || transition === "New angle";
+
+/** Which clips a change to this clip touches: the clips that continue it without a hard cut (they share its outfit,
+ *  performer, and place), the clip it continues from, and the clips whose videos must render again. */
+export function clipChain(rows: ClipRow[], index: number): { followers: number[]; continuesFrom: number | null; rerenderWith: number[] } {
+  const ordered = [...rows].sort((a, b) => a.clip_index - b.clip_index);
+  const position = ordered.findIndex((row) => row.clip_index === index);
+  const followers: number[] = [];
+  for (let next = position + 1; position >= 0 && next < ordered.length && joined(ordered[next].transition); next++) followers.push(ordered[next].clip_index);
+  const continuesFrom = position > 0 && joined(ordered[position].transition) ? ordered[position - 1].clip_index : null;
+  const rerenderWith = withContinuations([index], ordered.map((row) => ({ index: row.clip_index, transition: row.transition ?? "", overlapFrames: row.overlap_frames }))).clips;
+  return { followers, continuesFrom, rerenderWith };
+}
+
+/** The performer, outfit, and location images already in this package, named from the production plan where it can. */
+function refOptions(creatives: Record<string, CreativeRecord>, rows: ClipRow[]): ClipRefOption[] {
+  const byIndex = new Map(rows.map((row) => [row.clip_index, row]));
+  const options = new Map<string, ClipRefOption>();
+  const counts: Record<ClipRefRole, number> = { person: 0, outfit: 0, location: 0 };
+  const fallback: Record<ClipRefRole, string> = { person: "Performer", outfit: "Outfit", location: "Location" };
+  for (const [key, record] of Object.entries(creatives).sort(([a], [b]) => Number(a) - Number(b))) {
+    const row = byIndex.get(Number(key));
+    const meta = parseJson<ClipMetaExtra>(row?.meta) ?? {};
+    for (const ref of record.refs ?? []) {
+      const role = ref.role as ClipRefRole;
+      const file = text(ref.file);
+      if (!SWAP_ROLES.includes(role) || !file) continue;
+      const named = role === "outfit" ? row?.outfit : role === "location" ? row?.location : meta.subject;
+      const id = `${role}:${file}`;
+      const existing = options.get(id);
+      if (existing) {
+        if (!existing.name && named) existing.name = named;
+        continue;
+      }
+      options.set(id, { role, file, name: named ?? "", ...(role === "location" ? { locationText: text(record.location_text) } : {}) });
+    }
+  }
+  const list = [...options.values()];
+  for (const option of list) if (!option.name) option.name = `${fallback[option.role]} ${++counts[option.role]}`;
+  // Two images under one name (e.g. the same outfit name for different pictures) stay distinguishable.
+  for (const option of list) {
+    const twins = list.filter((other) => other.role === option.role && other.name === option.name);
+    if (twins.length > 1) twins.forEach((twin, position) => { twin.name = `${twin.name} (${position + 1})`; });
+  }
+  return list;
+}
+
+function shotSettings(record: CreativeRecord, options: ClipRefOption[]): ClipShotSettings {
+  const scene = (text(record.scene) || "") as ClipMode;
+  const named = text(record.camera_name);
+  const camera = (named === "Continue" || (CLIP_CAMERAS as readonly string[]).includes(named) ? named : record.ask_camera ? "LLM picks (experimental)" : "Custom") as ClipShotSettings["camera"];
+  const refs: ClipShotSettings["refs"] = {};
+  for (const ref of record.refs ?? []) {
+    const role = ref.role as ClipRefRole;
+    if (SWAP_ROLES.includes(role) && text(ref.file)) refs[role] = text(ref.file);
+  }
+  const lipSync = Boolean(text(record.lip_sync_text));
+  return {
+    scene, camera, cameraText: text(record.camera_sentence), soundscape: text(record.soundscape),
+    soundscapeEditable: scene !== "Dance" || Boolean(record.soundscape_locked),
+    lipSync, lipSyncAvailable: scene !== "B-roll" && (lipSync || Boolean(text(record.lip_sync_saved) || text(record.lip_sync_option))),
+    ending: text(record.parsed?.ending), endingOverridden: Boolean(text(record.ending_override)), locationText: text(record.location_text),
+    refs, options: options.filter((option) => option.role in refs),
+  };
+}
+
+/** Moves the videos of these clips to `archive` and marks them for rendering. Returns how many files moved. */
+async function supersedeClips(folder: string, rows: ClipRow[], indexes: number[], archive: string): Promise<number> {
+  const names = await fs.readdir(folder).catch(() => [] as string[]);
+  let moved = 0;
+  for (const row of rows.filter((item) => indexes.includes(item.clip_index))) {
+    const base = row.video_name.toLowerCase();
+    for (const name of names.filter((name) => {
+      const lower = name.toLowerCase();
+      return lower.endsWith(".mp4") && (lower === `${base}.mp4` || lower.startsWith(`${base}_`));
+    })) {
+      await fs.mkdir(archive, { recursive: true });
+      await fs.rename(path.join(folder, name), path.join(archive, name));
+      moved += 1;
+    }
+    update("render_clips", row.id, { status: "pending", output_path: null, error: null, rendered_at: null, updated_at: now() });
+  }
+  return moved;
+}
+
+const REVISION_MODES: ClipRevisionMode[] = ["Try another take", "Apply manual direction", "Apply shot settings"];
+const CLIP_SCENES: ClipMode[] = ["Dance", "Performance", "Freeform", "B-roll"];
+
+/** Checks the renderer's changes and turns them into the revision node's JSON (snake_case keys). */
+function revisionChanges(raw: unknown, shot: ClipShotSettings | null): { node: Record<string, unknown>; changes: ClipChanges; swaps: boolean } {
+  if (raw === undefined || raw === null) return { node: {}, changes: {}, swaps: false };
+  if (typeof raw !== "object" || Array.isArray(raw)) throw new Error("Shot changes must be an object.");
+  const value = raw as Record<string, unknown>;
+  const changes: ClipChanges = {};
+  const node: Record<string, unknown> = {};
+  const optionalText = (key: keyof ClipChanges): string | undefined => {
+    if (value[key] === undefined) return undefined;
+    if (typeof value[key] !== "string" || (value[key] as string).length > 4000) throw new Error(`${key} must be text of at most 4000 characters.`);
+    return value[key] as string;
+  };
+  if (value.scene !== undefined) {
+    if (!CLIP_SCENES.includes(value.scene as ClipMode)) throw new Error("Unknown scene type.");
+    changes.scene = node.scene = value.scene as ClipMode;
+  }
+  if (value.camera !== undefined) {
+    const camera = value.camera as { name?: unknown; text?: unknown } | null;
+    if (!camera || !(CLIP_CAMERAS as readonly string[]).includes(camera.name as string)) throw new Error("Unknown camera choice.");
+    if (camera.text !== undefined && (typeof camera.text !== "string" || camera.text.length > 1000)) throw new Error("The custom camera must be text of at most 1000 characters.");
+    changes.camera = node.camera = { name: camera.name as ClipCamera, text: camera.text as string | undefined };
+  }
+  const soundscape = optionalText("soundscape");
+  if (soundscape !== undefined) changes.soundscape = node.soundscape = soundscape;
+  const ending = optionalText("ending");
+  if (ending !== undefined) changes.ending = node.ending = ending;
+  if (value.lipSync !== undefined) {
+    if (typeof value.lipSync !== "boolean") throw new Error("lipSync must be true or false.");
+    changes.lipSync = node.lip_sync = value.lipSync;
+  }
+  let locationText = optionalText("locationText");
+  let swaps = false;
+  if (value.refs !== undefined) {
+    if (!value.refs || typeof value.refs !== "object" || Array.isArray(value.refs)) throw new Error("refs must be an object.");
+    const refs: Partial<Record<ClipRefRole, string>> = {};
+    for (const [role, file] of Object.entries(value.refs as Record<string, unknown>)) {
+      const option = shot?.options.find((item) => item.role === role && item.file === file);
+      if (!option) throw new Error(`${String(file)} is not a ${role} image in this prompt package.`);
+      if (shot?.refs[option.role] === file) continue;
+      refs[option.role] = option.file;
+      // a different location brings its own description unless the user wrote one
+      if (option.role === "location" && locationText === undefined && option.locationText !== undefined) locationText = option.locationText;
+    }
+    if (Object.keys(refs).length) { changes.refs = node.refs = refs; swaps = true; }
+  }
+  if (locationText !== undefined) { changes.locationText = node.location_text = locationText; swaps = true; }
+  return { node, changes, swaps };
+}
+
+/** Changes one clip through ComfyUI: a new LLM take (with an optional note), a hand-written direction, or shot settings
+ * without the LLM. The story and package stay in place. A reference swap is carried into the clips that continue this one,
+ * which the renderer must confirm. The changed clips, and those that reuse their frames, are marked for re-render. */
+export async function reviseClipPrompt(projectId: unknown, clipIndex: unknown, request: unknown): Promise<ProduceOverview> {
   const project = projectIdentity(projectId);
   const index = validateClipIndex(clipIndex);
-  if (mode !== "Try another take" && mode !== "Apply manual direction") throw new Error("Choose Try another take or Apply manual direction.");
-  if (mode === "Apply manual direction" && (typeof creativeText !== "string" || !creativeText.trim())) {
-    throw new Error("Enter a replacement creative direction first.");
-  }
+  const value = (request && typeof request === "object" ? request : {}) as Partial<ClipRevisionRequest>;
+  const mode = value.mode as ClipRevisionMode;
+  if (!REVISION_MODES.includes(mode)) throw new Error("Choose Try another take, Apply manual direction, or Apply shot settings.");
+  const creativeText = typeof value.creativeText === "string" ? value.creativeText : "";
+  if (creativeText.length > 8000) throw new Error("The direction is too long (at most 8000 characters).");
+  if (mode === "Apply manual direction" && !creativeText.trim()) throw new Error("Enter a replacement creative direction first.");
   const release = claimProduction("package", project.id);
   try {
     const overview = await produceOverview(project.id);
@@ -975,42 +1163,94 @@ export async function reviseClipPrompt(projectId: unknown, clipIndex: unknown, m
     if (!pkgRow || !pkg) throw new Error("There is no prompt package yet.");
     if (overview.packageStale.length) throw new Error("The director plan changed after this package. Write a new prompt package before revising one of its clips.");
     const settings = parseJson<PackageSettings>(pkgRow.settings);
-    if (!settings?.directorLlm) throw new Error("This prompt package does not record its local director LLM. Write a fresh prompt package first.");
+    if (mode === "Try another take" && !settings?.directorLlm) throw new Error("This prompt package does not record its local director LLM. Write a fresh prompt package first.");
     const comfy = await comfyStatus();
     if (!comfy.connected) throw new Error(`ComfyUI is not reachable at ${comfy.endpoint}. Start ComfyUI and wait for it to finish loading.`);
     const rows = await syncClipsWithDisk(pkgRow.id, pkg.folder);
-    if (!rows.some((row) => row.clip_index === index)) throw new Error(`Clip ${index} is not in this prompt package.`);
-    const run = await serializeComfyWork(() => runWorkflowTemplate(development, "04b-revise-clip-prompt.json", {
-      package_folder: pkg.folder, director_llm: settings.directorLlm, clip_index: index, revision_mode: mode,
-      creative_text: typeof creativeText === "string" ? creativeText : "", seed: settings.seed,
+    const row = rows.find((item) => item.clip_index === index);
+    if (!row) throw new Error(`Clip ${index} is not in this prompt package.`);
+    const creatives = await readCreatives(pkg.folder);
+    const record = creatives?.[String(index)];
+    const shot = record && creatives ? shotSettings(record, refOptions(creatives, rows)) : null;
+    const { node, changes, swaps } = revisionChanges(value.changes, shot);
+    if (Object.keys(node).length && !shot) throw new Error("This older prompt package has no editable clip source. Write a fresh prompt package first.");
+    const chain = clipChain(rows, index);
+    const carried = swaps ? chain.followers : [];
+    if (carried.length && value.confirmDownstream !== true) {
+      throw new Error(`This change carries into clip${carried.length === 1 ? "" : "s"} ${formatRanges(carried)}, which continue this shot. Confirm it first.`);
+    }
+    if (carried.length) node.propagate = carried;
+
+    const take = mode === "Try another take";
+    const run = await serializeComfyWork(() => runWorkflowTemplate(development, take ? "04b-revise-clip-prompt.json" : "04c-apply-clip-settings.json", {
+      package_folder: pkg.folder, clip_index: index, revision_mode: mode, creative_text: creativeText, changes: JSON.stringify(node),
+      seed: settings?.seed ?? 0, ...(take ? { director_llm: settings!.directorLlm } : {}),
     }, project.id));
     const report = previewText(run.outputs, "revision_report") ?? "Clip prompt revised.";
-    const changed = withContinuations([index], rows.map((row) => ({ index: row.clip_index, transition: row.transition ?? "", overlapFrames: row.overlap_frames })));
-    const archive = path.join(pkg.folder, "superseded", `prompt-revision-${archiveStamp(now())}`);
-    const names = await fs.readdir(pkg.folder).catch(() => [] as string[]);
-    let moved = 0;
-    for (const row of rows.filter((item) => changed.clips.includes(item.clip_index))) {
-      const base = row.video_name.toLowerCase();
-      for (const name of names.filter((name) => {
-        const lower = name.toLowerCase();
-        return lower.endsWith(".mp4") && (lower === `${base}.mp4` || lower.startsWith(`${base}_`));
-      })) {
-        await fs.mkdir(archive, { recursive: true });
-        await fs.rename(path.join(pkg.folder, name), path.join(archive, name));
-        moved += 1;
-      }
-      update("render_clips", row.id, { status: "pending", output_path: null, error: null, rendered_at: null, updated_at: now() });
+
+    // keep the clip table in step with the package: names shown on Produce and Results
+    const option = (role: ClipRefRole) => (changes.refs?.[role] ? shot?.options.find((item) => item.role === role && item.file === changes.refs![role]) : undefined);
+    for (const target of rows.filter((item) => item.clip_index === index || carried.includes(item.clip_index))) {
+      const fields: Record<string, unknown> = {};
+      const meta = parseJson<ClipMetaExtra>(target.meta) ?? {};
+      if (option("outfit")) fields.outfit = option("outfit")!.name;
+      if (option("location")) fields.location = option("location")!.name;
+      if (option("person")) meta.subject = option("person")!.name;
+      if (target.clip_index === index && changes.scene) fields.scene = changes.scene;
+      if (target.clip_index === index && changes.camera) meta.camera = changes.camera.name === "Custom" ? changes.camera.text || "Custom" : changes.camera.name;
+      if (option("person") || (target.clip_index === index && changes.camera)) fields.meta = JSON.stringify(meta);
+      if (Object.keys(fields).length) update("render_clips", target.id, { ...fields, updated_at: now() });
     }
+
+    const changed = withContinuations([index, ...carried], rows.map((item) => ({ index: item.clip_index, transition: item.transition ?? "", overlapFrames: item.overlap_frames })));
+    const archive = path.join(pkg.folder, "superseded", `prompt-revision-${archiveStamp(now())}`);
+    const moved = await supersedeClips(pkg.folder, rows, changed.clips, archive);
     db().prepare("UPDATE martini_projects SET status = 'prompt_package_ready', updated_at = ? WHERE id = ?").run(now(), project.id);
     addReport(project.id, "clip_prompt_revision", `${report}\nClip${changed.clips.length === 1 ? "" : "s"} ${formatRanges(changed.clips)} now need rendering.`
       + (changed.added.length ? ` ${formatRanges(changed.added)} added for motion continuity.` : "")
       + (moved ? ` ${moved} earlier video file${moved === 1 ? " was" : "s were"} moved to ${archive}.` : ""),
-    { clip: index, mode, dependentClips: changed.added, archive: moved ? archive : null, report });
+    { clip: index, mode, changes, carried, dependentClips: changed.added, archive: moved ? archive : null, report });
     return produceOverview(project.id);
   } finally {
     release();
     notify(project.id);
   }
+}
+
+/** Renders a finished clip again with a new noise seed and the same prompt. Its video, and those of the clips that reuse
+ * its frames, move to the package's superseded folder first. */
+export async function rerenderClip(projectId: unknown, clipIndex: unknown): Promise<ProduceOverview> {
+  const project = projectIdentity(projectId);
+  const index = validateClipIndex(clipIndex);
+  let chosen: number[];
+  let othersPending: boolean;
+  const release = claimProduction("render", project.id);
+  try {
+    const overview = await produceOverview(project.id);
+    const pkgRow = currentPackageRow(project.id);
+    const pkg = overview.package;
+    if (!pkgRow || !pkg) throw new Error("There is no prompt package to re-render.");
+    if (overview.packageStale.length) throw new Error(`${overview.packageStale.join(" ")} Write a new prompt package before re-rendering.`);
+    if (overview.latestPackageRun?.status === "queued" || overview.latestPackageRun?.status === "running") throw new Error("A prompt package is being written.");
+    const rows = await syncClipsWithDisk(pkgRow.id, pkg.folder);
+    const row = rows.find((item) => item.clip_index === index);
+    if (!row) throw new Error(`Clip ${index} is not in this prompt package.`);
+    if (row.status !== "rendered") throw new Error(`Clip ${index} has no video yet; use Render clip ${index} instead.`);
+    chosen = clipChain(rows, index).rerenderWith;
+    othersPending = rows.some((item) => item.status !== "rendered" && !chosen.includes(item.clip_index));
+    const archive = path.join(pkg.folder, "superseded", `rerender-${archiveStamp(now())}`);
+    if (!isInside(project.projectPath, archive)) throw new Error("The package folder is outside the project folder.");
+    const moved = await supersedeClips(pkg.folder, rows, chosen, archive);
+    db().prepare("UPDATE martini_projects SET status = 'prompt_package_ready', updated_at = ? WHERE id = ?").run(now(), project.id);
+    addReport(project.id, "rerender", `Re-render clip ${index} with a new seed`
+      + (chosen.length > 1 ? ` (clip${chosen.length === 2 ? "" : "s"} ${formatRanges(chosen.filter((item) => item !== index))} reuse its frames and render again too)` : "")
+      + `. ${moved} earlier video file${moved === 1 ? "" : "s"} moved to ${archive}. The prompt was not changed.`, { clips: chosen, archive, moved });
+  } finally {
+    release();
+  }
+  notify(project.id);
+  // With nothing else waiting, render the whole chain in order; otherwise only this clip, so unrelated clips don't start.
+  return othersPending ? queueSpecificClip(project.id, index) : queueRemaining(project.id);
 }
 
 function locationEvidence(row: ClipRow, planReport: string, locations: Awaited<ReturnType<typeof locationsOverview>>): DecisionRow {

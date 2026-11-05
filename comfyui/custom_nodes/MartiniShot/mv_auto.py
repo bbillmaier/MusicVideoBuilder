@@ -251,6 +251,7 @@ def plan_auto_shots(analysis: dict[str, Any], refs: list[dict[str, Any]], *, see
         return _pick(rng, locations, role, avoid=avoid)
     location_by_label: dict[str, dict[str, Any]] = {}
     location = outfit = subject = None
+    last_outfit = last_subject = None  # outfit and performer of the previous shot
     last_camera = ""
     previous_refs: tuple = ()
     last_main_location = None  # location of the last shot that is not a B-roll insert
@@ -368,6 +369,25 @@ def plan_auto_shots(analysis: dict[str, Any], refs: list[dict[str, Any]], *, see
                 location = pick_location(role, location) if len(locations) > 1 or invented else location
                 moved = location["name"]
                 refs_now = (id(location), id(outfit), id(subject), scene)
+            held = kept_outfit = ""
+            if (shots and scene != "B-roll" and shots[-1]["scene_type"] != "B-roll" and location is not None
+                    and location["name"].lower() == shots[-1]["_place"].lower()):
+                # still in the same place as the previous performer shot (the location could not move, e.g. the
+                # story fixes it). A new performer here needs a hard cut; the same performer holds the set and
+                # keeps the outfit, so the shots read as one continuous moment.
+                if subject is not last_subject:
+                    if transition != "Hard cut":
+                        held = transition = "Hard cut"
+                else:
+                    if outfit is not last_outfit:
+                        outfit = last_outfit  # sticks for the rest of the section
+                        kept_outfit = outfit["name"] if outfit else "none"
+                        refs_now = (id(location), id(outfit), id(subject), scene)
+                    if transition == "Hard cut":
+                        # a forced cut must stay visible, so it takes a new angle even without a location image
+                        held = transition = ("New angle" if location.get("image") is not None
+                                             or (k == 0 and section.get("forced")) else "Continue")
+            last_outfit, last_subject = outfit, subject
             if not insert:
                 last_main_location = location
             previous_refs = refs_now
@@ -452,6 +472,7 @@ def plan_auto_shots(analysis: dict[str, Any], refs: list[dict[str, Any]], *, see
                 "extra_refs": (),
                 "references": "Use / inherit",
                 "_label": f"{section['label']} {role} | {place}",
+                "_place": place,
                 "_section": section.get("orig", index + 1),  # original section number (motifs are keyed by it)
                 "_role": role,
                 "_action": action,
@@ -475,6 +496,9 @@ def plan_auto_shots(analysis: dict[str, Any], refs: list[dict[str, Any]], *, see
                 + (" | story action superseded by lyric location" if beat and not active_beat and location_triggered else "")
                 + (f" | TRIGGER {', '.join(switched)}" if switched else "")
                 + (f" | hard cut moves to {moved}" if moved else "")
+                + (f" | same location: {'new performer, hard cut' if held == 'Hard cut' else f'hard cut -> {held}'}"
+                   if held else "")
+                + (f" | same location: outfit kept ({kept_outfit})" if kept_outfit else "")
                 + (" | invented location" if shot_location and shot_location.get("invented") else "")
                 + (" | B-roll-only location" if shot_location and shot_location.get("broll_only") else "")
             )

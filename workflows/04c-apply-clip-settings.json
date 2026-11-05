@@ -1,0 +1,32 @@
+{
+  "name": "04c-apply-clip-settings.json",
+  "stage": "apply_clip_settings",
+  "description": "Applies shot settings (camera, lip sync, soundscape, ending state, reference swaps) to one existing prompt-package clip without loading the LLM, or a manual creative direction with settings. Reference swaps may be carried into the clips that continue it. It never replans the story.",
+  "prompt": {
+    "revise": {
+      "class_type": "MartiniShotReviseClipPrompt",
+      "inputs": {
+        "folder": "{{package_folder}}",
+        "clip_index": "{{clip_index}}",
+        "mode": "{{revision_mode}}",
+        "creative_text": "{{creative_text}}",
+        "changes": "{{changes}}",
+        "temperature": 0.8,
+        "max_tokens": 1200,
+        "seed": "{{seed}}"
+      }
+    },
+    "revised_prompt": {
+      "class_type": "PreviewAny",
+      "inputs": { "source": ["revise", 0] }
+    },
+    "creative_text": {
+      "class_type": "PreviewAny",
+      "inputs": { "source": ["revise", 1] }
+    },
+    "revision_report": {
+      "class_type": "PreviewAny",
+      "inputs": { "source": ["revise", 2] }
+    }
+  }
+}

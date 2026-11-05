@@ -18,7 +18,7 @@ import {
 } from "./location-service";
 import { LOCATION_IMAGE_EXTENSIONS } from "./location-rules";
 import {
-  clipDetail, clipOutputPath, configureProductionService, currentPreviewSession, packageFolderFor, produceOverview, queueRemaining, queueRender, queueSpecificClip, rerenderUnchanged, retryClip, reviseClipPrompt,
+  clipDetail, clipOutputPath, configureProductionService, currentPreviewSession, packageFolderFor, produceOverview, queueRemaining, queueRender, queueSpecificClip, rerenderClip, rerenderUnchanged, retryClip, reviseClipPrompt,
   startPromptPackage, stopAfterCurrent,
 } from "./production-service";
 import {
@@ -121,8 +121,11 @@ app.whenReady().then(() => {
     }
     if (url.hostname === "file") file = decodeURIComponent(url.pathname.slice(1));
     if (!file) return new Response("Not found", { status: 404 });
+    // DB-backed asset/location/clip/final handlers return vetted absolute local
+    // paths. Only the legacy `file` route uses a Martini Shot-relative path.
     const storage = await projectStorage();
-    const response = await net.fetch(pathToFileURL(storage.localPath!(file)).toString(), { headers: request.headers });
+    const localFile = path.isAbsolute(file) ? file : storage.localPath!(file);
+    const response = await net.fetch(pathToFileURL(localFile).toString(), { headers: request.headers });
     const headers = new Headers(response.headers);
     headers.set("Access-Control-Allow-Origin", "*");
     return new Response(response.body, { status: response.status, headers });
@@ -209,8 +212,13 @@ app.whenReady().then(() => {
   ipcMain.handle("martini:produce-stop-after-current", (_event, projectId: unknown) => stopAfterCurrent(projectId));
   ipcMain.handle("martini:produce-retry-clip", (_event, projectId: unknown, clipIndex: unknown) => retryClip(projectId, clipIndex));
   ipcMain.handle("martini:produce-clip-detail", (_event, projectId: unknown, clipIndex: unknown) => clipDetail(projectId, clipIndex));
-  ipcMain.handle("martini:produce-revise-clip-prompt", (_event, projectId: unknown, clipIndex: unknown, mode: unknown, creativeText: unknown) =>
-    reviseClipPrompt(projectId, clipIndex, mode, creativeText));
+  ipcMain.handle("martini:produce-revise-clip-prompt", (_event, projectId: unknown, clipIndex: unknown, request: unknown) =>
+    reviseClipPrompt(projectId, clipIndex, request));
+  ipcMain.handle("martini:produce-rerender-clip", (_event, projectId: unknown, clipIndex: unknown, confirmed: unknown) => {
+    // Re-rendering moves existing videos aside (and those of clips that reuse its frames); the renderer must have asked first.
+    if (confirmed !== true) throw new Error("Re-render needs confirmation.");
+    return rerenderClip(projectId, clipIndex);
+  });
   ipcMain.handle("martini:produce-open-folder", async (_event, projectId: unknown) => {
     const error = await shell.openPath(packageFolderFor(projectId));
     if (error) throw new Error(error);

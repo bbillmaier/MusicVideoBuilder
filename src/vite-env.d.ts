@@ -12,6 +12,7 @@ import type {
   TimelineSection as SharedTimelineSection, ProduceEvent as SharedProduceEvent,
   ResultsOverview as SharedResultsOverview, FinalVideo as SharedFinalVideo, DirectorReport as SharedDirectorReport, ReportSection as SharedReportSection,
   RerenderRequest as SharedRerenderRequest, RerenderResult as SharedRerenderResult, FinalState as SharedFinalState,
+  ClipRevisionRequest as SharedClipRevisionRequest,
 } from "../electron/contracts";
 
 declare global {
@@ -27,7 +28,7 @@ declare global {
     comfyUrl: string; videoModel: string; vae: string; directorLlm: string; contextLength: string;
     lora: string; loraStrength: number; steps: number; cfg: number; seedMode: "random" | "fixed";
     resolution: string; fps: number; outputFormat: string; dynamicLength: boolean; higherQuality: boolean;
-    keepIntermediateOutputs: boolean; livePreviews: boolean; comfyOutputDir: string;
+    keepIntermediateOutputs: boolean; livePreviews: boolean; vramCleanup: boolean; ramCleanup: boolean; comfyOutputDir: string;
     executionDestination: "local" | "remote"; remoteComfyUrl: string; remoteFileApiToken: string;
   };
 
@@ -122,7 +123,8 @@ declare global {
         stopAfterCurrent(projectId: string): Promise<ProduceOverview>;
         retryClip(projectId: string, clipIndex: number): Promise<ProduceOverview>;
         clipDetail(projectId: string, clipIndex: number): Promise<ClipDetail>;
-        reviseClipPrompt(projectId: string, clipIndex: number, mode: "Try another take" | "Apply manual direction", creativeText: string): Promise<ProduceOverview>;
+        reviseClipPrompt(projectId: string, clipIndex: number, request: SharedClipRevisionRequest): Promise<ProduceOverview>;
+        rerenderClip(projectId: string, clipIndex: number, confirmed: true): Promise<ProduceOverview>;
         openFolder(projectId: string): Promise<void>;
         copyOutputPath(projectId: string, clipIndex: number): Promise<string>;
         previewSession(): Promise<LivePreviewSession>;
