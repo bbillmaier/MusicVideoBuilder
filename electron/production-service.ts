@@ -30,6 +30,7 @@ import {
 } from "./production-rules";
 import { ensureComfyProjectSaved, getProject, projectIdentity, suppliedLocationNames } from "./project-service";
 import { isInside } from "./project-rules";
+import { RemoteRenderStaging, remoteOutputPath } from "./remote-render-staging";
 
 const PACKAGE_STAGE = "prompt_package";
 const now = () => new Date().toISOString();
@@ -54,7 +55,7 @@ export type AttemptRow = {
   id: string; project_id: string; package_run_id: string; queue_id: string | null; clip_index: number; attempt: number; loader_mode: string;
   noise_seed: number; comfy_job_id: string | null; prompt_id: string | null; status: RenderAttempt["status"]; cleanup_status: CleanupState;
   cleanup: string | null; output_path: string | null; loader_report: string | null; error: string | null; started_at: string;
-  submitted_at: string | null; rendered_at: string | null; finished_at: string | null;
+  submitted_at: string | null; rendered_at: string | null; finished_at: string | null; remote_endpoint?: string | null; staging_evidence?: string | null;
 };
 type QueueRow = {
   id: string; project_id: string; package_run_id: string; kind: RenderQueueState["kind"]; requested: number; target: number;
@@ -609,18 +610,23 @@ export async function stopAfterCurrent(projectId: unknown): Promise<ProduceOverv
 async function reconcileInterrupted(projectId: string, packageRunId: string, folder: string): Promise<void> {
   const rows = (db().prepare("SELECT * FROM render_attempts WHERE package_run_id = ? AND status = 'interrupted' AND prompt_id IS NOT NULL").all(packageRunId) as AttemptRow[]);
   if (!rows.length) return;
-  const queue = await comfyQueueIds();
+  const queue = await comfyQueueIds(rows[0]?.remote_endpoint || undefined);
   const busyRow = rows.find((row) => queue.running.includes(row.prompt_id!) || queue.pending.includes(row.prompt_id!));
   if (busyRow) {
     throw new Error(`ComfyUI is still rendering clip ${busyRow.clip_index}, which started before Martini Shot was closed. Wait for it to finish in ComfyUI, then queue again.`);
   }
   let needsCleanup = false;
   for (const row of rows) {
-    const history = await comfyHistory(row.prompt_id!);
+    const history = await comfyHistory(row.prompt_id!, row.remote_endpoint || undefined);
     const at = now();
     if (history?.status === "success") {
       const saved = savedVideo(history.outputs, "save");
-      const output = saved ? path.join((await getMachineSettings()).comfyOutputDir, saved.subfolder, saved.filename) : null;
+      let output: string | null = null;
+      if (saved && row.remote_endpoint) {
+        const project = projectIdentity(projectId); const worker = new RemoteRenderStaging(row.remote_endpoint, (await getMachineSettings()).remoteFileApiToken);
+        const target = remoteOutputPath(project.slug, project.projectPath, folder, saved.subfolder, saved.filename);
+        const stat = await worker.stat(target.remote); if (stat.exists && stat.type === "file" && stat.size) { await worker.download(target.remote, target.local); output = target.local; }
+      } else if (saved) output = path.join((await getMachineSettings()).comfyOutputDir, saved.subfolder, saved.filename);
       update("render_attempts", row.id, {
         status: "complete", output_path: output, loader_report: previewText(history.outputs, "clip_report"), rendered_at: at, finished_at: at,
         error: "Finished in ComfyUI while Martini Shot was closed.", cleanup_status: "not_requested",
@@ -634,7 +640,7 @@ async function reconcileInterrupted(projectId: string, packageRunId: string, fol
   }
   await syncClipsWithDisk(packageRunId, folder);
   if (needsCleanup) {
-    const cleanup = await freeComfyMemory();
+    const cleanup = await freeComfyMemory(rows.find((row) => row.remote_endpoint)?.remote_endpoint || undefined);
     addReport(projectId, "render_cleanup", `Cleanup after recovering earlier renders: ${cleanupText(cleanup)}`, cleanup);
     if (cleanup.status !== "completed") throw new Error(`ComfyUI cleanup did not complete, so no new clip was started. ${cleanup.error ?? ""}`);
   }
@@ -650,8 +656,17 @@ async function startQueue(projectId: unknown, kind: RenderQueueState["kind"], re
     if (blockers.length) throw new Error(blockers.join(" "));
     const pkgRow = currentPackageRow(project.id)!;
     const pkg = overview.package!;
-    const comfy = await comfyStatus();
-    if (!comfy.connected) throw new Error(`ComfyUI is not reachable at ${comfy.endpoint}. Start ComfyUI, wait until it has finished loading, then queue again. (${comfy.message})`);
+    const machine = await getMachineSettings();
+    let endpoint: string;
+    if (machine.executionDestination === "remote") {
+      const worker = new RemoteRenderStaging(machine.remoteComfyUrl, machine.remoteFileApiToken);
+      await worker.checkConnection();
+      endpoint = worker.endpoint;
+    } else {
+      const comfy = await comfyStatus();
+      if (!comfy.connected) throw new Error(`ComfyUI is not reachable at ${comfy.endpoint}. Start ComfyUI, wait until it has finished loading, then queue again. (${comfy.message})`);
+      endpoint = comfy.endpoint;
+    }
     await reconcileInterrupted(project.id, pkgRow.id, pkg.folder);
     const rows = await syncClipsWithDisk(pkgRow.id, pkg.folder);
     const remaining = rows.filter((row) => row.status !== "rendered");
@@ -686,8 +701,8 @@ async function startQueue(projectId: unknown, kind: RenderQueueState["kind"], re
         ? `Render clip ${retryIndex} queued (that clip only).`
       : `Queued ${target} clip${target === 1 ? "" : "s"}${requested > target && kind === "count" ? ` (asked for ${requested}; ${remaining.length} remained)` : ""}${kind === "remaining" ? " — all remaining clips" : ""}. One ComfyUI render at a time.`,
     { queueId, requested: kind === "remaining" ? "remaining" : requested, target });
-    void runQueue(queueId, project.id, pkgRow.id, comfy.endpoint)
-      .catch((error: unknown) => finishQueue(queueId, project.id, "failed", readableProductionError(error instanceof Error ? error.message : String(error), comfy.endpoint)))
+    void runQueue(queueId, project.id, pkgRow.id, endpoint)
+      .catch((error: unknown) => finishQueue(queueId, project.id, "failed", readableProductionError(error instanceof Error ? error.message : String(error), endpoint)))
       .finally(() => { release(); notify(project.id); });
     notify(project.id);
     return produceOverview(project.id);
@@ -785,6 +800,14 @@ async function renderClip(queueId: string, projectId: string, packageRunId: stri
     const packageSettings = parseJson<PackageSettings>((db().prepare("SELECT settings FROM director_runs WHERE id = ?").get(packageRunId) as { settings: string } | undefined)?.settings ?? null);
     const direction = packageSettings?.direction;
     const settings = await getMachineSettings();
+    const remote = settings.executionDestination === "remote";
+    let worker: RemoteRenderStaging | null = null;
+    if (remote) {
+      worker = new RemoteRenderStaging(settings.remoteComfyUrl, settings.remoteFileApiToken);
+      const evidence = await worker.stageProject(projectIdentity(projectId).projectPath, projectIdentity(projectId).slug, folder);
+      update("render_attempts", attemptId, { remote_endpoint: worker.endpoint, staging_evidence: JSON.stringify(evidence) });
+      addReport(projectId, "render_clip", `Clip ${clip.clip_index}: staged ${evidence.fileCount} files to remote render worker (${evidence.uploaded} uploaded, ${evidence.skipped} unchanged).`, evidence);
+    }
     previewClientId = settings.livePreviews ? randomUUID() : undefined;
     if (previewClientId) notifyPreview({ projectId, clipIndex: clip.clip_index, endpoint, clientId: previewClientId });
     const values = {
@@ -796,6 +819,7 @@ async function renderClip(queueId: string, projectId: string, packageRunId: stri
     let cleanupFailed = false;
     try {
       const run = await runWorkflowTemplate(development, "05-render-next-clip.json", values, projectId, undefined, {
+        endpoint: remote ? worker!.endpoint : undefined,
         jobId, waitWhileQueued: true, clientId: previewClientId,
         onSubmitted: (promptId) => {
           update("render_attempts", attemptId, { prompt_id: promptId, status: "running", submitted_at: now() });
@@ -825,10 +849,20 @@ async function renderClip(queueId: string, projectId: string, packageRunId: stri
     const loader = parseLoaderReport(loaderReport);
     const saved = savedVideo(outputs, "save");
     if (!saved) throw new Error("ComfyUI finished, but Save Video reported no file.");
-    const outputDir = (await getMachineSettings()).comfyOutputDir;
-    const output = path.resolve(outputDir, saved.subfolder, saved.filename);
-    if (!existsSync(output)) throw new Error(`ComfyUI saved ${saved.subfolder}/${saved.filename}, but it is not under the output folder in Settings (${outputDir}).`);
-    if (!isInside(folder, output)) throw new Error(`ComfyUI saved the clip outside the package folder: ${output}.`);
+    let output: string;
+    if (worker) {
+      const remoteOutput = remoteOutputPath(projectIdentity(projectId).slug, projectIdentity(projectId).projectPath, folder, saved.subfolder, saved.filename);
+      const stat = await worker.stat(remoteOutput.remote);
+      if (!stat.exists || stat.type !== "file" || !stat.size) throw new Error("Remote SaveVideo output is missing or invalid.");
+      await worker.download(remoteOutput.remote, remoteOutput.local);
+      output = remoteOutput.local;
+    } else {
+      const outputDir = (await getMachineSettings()).comfyOutputDir;
+      output = path.resolve(outputDir, saved.subfolder, saved.filename);
+      if (!existsSync(output)) throw new Error(`ComfyUI saved ${saved.subfolder}/${saved.filename}, but it is not under the output folder in Settings (${outputDir}).`);
+      if (!isInside(folder, output)) throw new Error(`ComfyUI saved the clip outside the package folder: ${output}.`);
+    }
+    if (!findVideo(await readFolder(folder), clip.video_name)) throw new Error("Downloaded clip did not pass local video validation.");
     const renderedIndex = loader?.clip ?? clip.clip_index;
     const at = now();
     update("render_attempts", attemptId, {

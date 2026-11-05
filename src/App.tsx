@@ -174,13 +174,16 @@ function Settings({ database, comfy, checking, onRecheck, onOpenComfy }: { datab
       </section>
 
       <section className="panel setting-card">
-        <div className="setting-head"><Icon.projects size={22} aria-hidden /><div><h2>ComfyUI folders</h2><p>Projects are stored where the MartiniShot nodes expect them. Use the output folder of the ComfyUI that is running.</p></div></div>
-        <label className="field"><span>Location</span><select className="select" value={settings.comfyLocation} onChange={(event) => update("comfyLocation", event.target.value as "local" | "remote")}><option value="local">This PC</option><option value="remote">Remote server</option></select></label>
-        {settings.comfyLocation === "local" ? <><label className="field"><span>Output folder</span>
-          <input className="input mono" value={settings.comfyOutputDir} placeholder={String.raw`E:\...\ComfyUI\output`} onChange={(event) => update("comfyOutputDir", event.target.value)} />
-        </label><PathField label="Projects" value={projectsRootHint(settings.comfyOutputDir)} /></> : <label className="field"><span>File API token</span>
-          <input className="input mono" type="password" value={settings.fileApiToken} placeholder="MARTINI_SHOT_TOKEN" onChange={(event) => update("fileApiToken", event.target.value)} />
-        </label>}
+        <div className="setting-head"><Icon.projects size={22} aria-hidden /><div><h2>Local project folders</h2><p>Every project, plan, package, result, and final video stays on this PC.</p></div></div>
+        <label className="field"><span>Local ComfyUI output folder</span><input className="input mono" value={settings.comfyOutputDir} placeholder={String.raw`E:\...\ComfyUI\output`} onChange={(event) => update("comfyOutputDir", event.target.value)} /></label>
+        <PathField label="Projects" value={projectsRootHint(settings.comfyOutputDir)} />
+      </section>
+
+      <section className="panel setting-card">
+        <div className="setting-head"><Icon.render size={22} aria-hidden /><div><h2>Workflow destination</h2><p>Projects stay local. Choose where the next planning, package, render, and stitch workflow executes.</p></div></div>
+        <label className="field"><span>Destination</span><select className="select" value={settings.executionDestination} onChange={(event) => update("executionDestination", event.target.value as "local" | "remote")}><option value="local">This PC</option><option value="remote">Remote ComfyUI worker</option></select></label>
+        <label className="field"><span>Remote ComfyUI endpoint</span><input className="input mono" value={settings.remoteComfyUrl} placeholder="https://&lt;pod-id&gt;-8188.proxy.runpod.net" onChange={(event) => update("remoteComfyUrl", event.target.value)} /></label>
+        <label className="field"><span>File API token</span><input className="input mono" type="password" value={settings.remoteFileApiToken} placeholder="MARTINI_SHOT_TOKEN" onChange={(event) => update("remoteFileApiToken", event.target.value)} /></label>
       </section>
 
       <section className="panel setting-card">

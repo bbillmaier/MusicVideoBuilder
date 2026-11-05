@@ -4,7 +4,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { closeDatabase, databaseStatus, getMachineSettings, recentComfyJobs, saveMachineSettings } from "./db";
 import { comfyEndpoint, comfyStatus, runWorkflowTemplate, serializeComfyWork } from "./comfy-client";
-import { projectStorage, RemoteProjectStorage } from "./project-storage";
+import { projectStorage } from "./project-storage";
 import { listWorkflowTemplates } from "./workflow-template";
 import type { AssetRole } from "./contracts";
 import { isAssetRole, ROLE_RULES } from "./project-rules";
@@ -122,9 +122,7 @@ app.whenReady().then(() => {
     if (url.hostname === "file") file = decodeURIComponent(url.pathname.slice(1));
     if (!file) return new Response("Not found", { status: 404 });
     const storage = await projectStorage();
-    const response = storage instanceof RemoteProjectStorage
-      ? await storage.proxy(file, request.headers.get("range") ?? undefined)
-      : await net.fetch(pathToFileURL(storage.localPath!(file)).toString(), { headers: request.headers });
+    const response = await net.fetch(pathToFileURL(storage.localPath!(file)).toString(), { headers: request.headers });
     const headers = new Headers(response.headers);
     headers.set("Access-Control-Allow-Origin", "*");
     return new Response(response.body, { status: response.status, headers });
@@ -250,7 +248,7 @@ app.whenReady().then(() => {
   ipcMain.handle("martini:results-rerender", (_event, projectId: unknown, request: unknown) => rerenderUnchanged(projectId, request));
   ipcMain.handle("martini:open-comfyui", async () => {
     const settings = await getMachineSettings();
-    await shell.openExternal(comfyEndpoint(settings.comfyUrl, settings.comfyLocation));
+    await shell.openExternal(comfyEndpoint(settings.comfyUrl, "local"));
   });
   createWindow();
 

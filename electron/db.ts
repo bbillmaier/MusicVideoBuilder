@@ -1,6 +1,6 @@
 import { app } from "electron";
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 export type DatabaseStatus = { configured: boolean; connected: boolean; message: string; storagePath?: string };
@@ -13,8 +13,14 @@ export type MachineSettings = {
   livePreviews: boolean;
   /** The running ComfyUI's output folder. Martini Shot projects live in <this>\martini_shot\<project-slug>. */
   comfyOutputDir: string;
-  comfyLocation: "local" | "remote";
-  fileApiToken: string;
+  /** Retained only to safely migrate Ticket 08 settings; projects are always local. */
+  comfyLocation?: "local" | "remote";
+  fileApiToken?: string;
+  remoteRenderingEnabled: boolean;
+  /** Selected execution backend for all workflow stages. Project storage is always local. */
+  executionDestination: "local" | "remote";
+  remoteComfyUrl: string;
+  remoteFileApiToken: string;
 };
 export type ComfyJob = {
   id: string; promptId: string | null; stage: string; status: string; report: string | null; error: string | null;
@@ -30,6 +36,10 @@ const defaults = (): MachineSettings => ({
   comfyOutputDir: process.env.COMFYUI_OUTPUT_DIR || String.raw`E:\LTX2-Install\ComfyUI_windows_portable\ComfyUI\output`,
   comfyLocation: "local",
   fileApiToken: "",
+  remoteRenderingEnabled: false,
+  executionDestination: "local",
+  remoteComfyUrl: "",
+  remoteFileApiToken: "",
 });
 
 let sqlite: DatabaseSync | undefined;
@@ -175,7 +185,10 @@ const migrations = [{ id: "001_initial_schema", sql: `
 ` }, { id: "007_director_controls", sql: `
   ALTER TABLE project_direction ADD COLUMN production_settings TEXT NOT NULL DEFAULT '{}';
 ` }, { id: "008_remote_project_paths", sql: `
-  -- Paths are converted by migrateRelativeProjectPaths below because the old output root is a user setting.
+  -- Retired by Ticket 09. This no-op remains for databases that already recorded it.
+` }, { id: "009_local_authority_remote_render_staging", sql: `
+  ALTER TABLE render_attempts ADD COLUMN remote_endpoint TEXT;
+  ALTER TABLE render_attempts ADD COLUMN staging_evidence TEXT;
 ` }];
 
 /** Convert pre-ticket absolute paths below output/martini_shot into wire paths. */
@@ -183,12 +196,8 @@ function migrateRelativeProjectPaths(database: DatabaseSync): void {
   const row = database.prepare("SELECT value FROM app_settings WHERE key = 'machine_defaults'").get() as { value?: string } | undefined;
   let output = defaults().comfyOutputDir;
   try { output = (JSON.parse(row?.value || "{}") as Partial<MachineSettings>).comfyOutputDir || output; } catch { /* default */ }
-  const root = join(output, "martini_shot").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-  const relative = (value: unknown) => {
-    if (typeof value !== "string") return value;
-    const normalized = value.replace(/\\/g, "/");
-    return normalized.toLowerCase().startsWith(`${root}/`) ? normalized.slice(root.length + 1) : value;
-  };
+  // Ticket 08 accidentally converted local-authoritative paths to wire paths. Only
+  // repair rows that are still relative; never rewrite a valid absolute local path.
   const fields: Record<string, string[]> = {
     martini_projects: ["project_path"], project_assets: ["stored_path"], location_requests: ["expected_path"],
     render_clips: ["output_path"], render_attempts: ["output_path"], final_results: ["video_path", "output_folder", "report_path"],
@@ -197,7 +206,11 @@ function migrateRelativeProjectPaths(database: DatabaseSync): void {
     try {
       const rows = database.prepare(`SELECT rowid, ${column} AS value FROM ${table} WHERE ${column} IS NOT NULL`).all() as { rowid: number; value: unknown }[];
       const update = database.prepare(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`);
-      for (const item of rows) { const value = relative(item.value); if (typeof value === "string" && value !== item.value) update.run(value, item.rowid); }
+      for (const item of rows) {
+        if (typeof item.value !== "string" || isAbsolute(item.value)) continue;
+        const value = join(output, "martini_shot", item.value.replace(/[\\/]+/g, "\\"));
+        update.run(value, item.rowid);
+      }
     } catch { /* Older database schemas can lack these columns. */ }
   }
 }

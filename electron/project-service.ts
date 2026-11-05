@@ -110,7 +110,7 @@ export function activeProject(): ProjectDetail | null {
 
 export async function projectsOverview(): Promise<ProjectsOverview> {
   const settings = await getMachineSettings();
-  return { active: activeProject(), recent: listProjects(), projectsRoot: settings.comfyLocation === "remote" ? "martini_shot" : path.join(settings.comfyOutputDir, "martini_shot"), rootError: null };
+  return { active: activeProject(), recent: listProjects(), projectsRoot: path.join(settings.comfyOutputDir, "martini_shot"), rootError: null };
 }
 
 // ----- Project create/open ---------------------------------------------------------------------------------

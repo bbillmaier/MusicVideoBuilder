@@ -70,5 +70,7 @@ export class RemoteProjectStorage implements ProjectStorage {
 }
 
 let cached: ProjectStorage | null = null; let key = "";
-export async function projectStorage(): Promise<ProjectStorage> { const settings = await getMachineSettings(); const next = `${settings.comfyLocation}|${settings.comfyUrl}|${settings.fileApiToken}|${settings.comfyOutputDir}`; if (cached && key === next) return cached; key = next; cached = settings.comfyLocation === "remote" ? new RemoteProjectStorage(settings.comfyUrl, settings.fileApiToken) : new LocalProjectStorage(path.join(settings.comfyOutputDir, "martini_shot")); return cached; }
+/** Projects are always owned by the local ComfyUI output folder. Remote file access
+ * is intentionally available only through RemoteRenderStaging for clip workers. */
+export async function projectStorage(): Promise<ProjectStorage> { const settings = await getMachineSettings(); const next = settings.comfyOutputDir; if (cached && key === next) return cached; key = next; cached = new LocalProjectStorage(path.join(settings.comfyOutputDir, "martini_shot")); return cached; }
 export function clearProjectStorageCache() { cached = null; key = ""; }

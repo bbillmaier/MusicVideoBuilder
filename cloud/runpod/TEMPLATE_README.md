@@ -1,6 +1,6 @@
-# Martini Shot ComfyUI
+# Martini Shot remote render worker
 
-A ready-to-use ComfyUI server for **Martini Shot**, the music video director app. Use it when your own PC can't run the models.
+A remote ComfyUI worker for **Martini Shot**. Projects remain on the local PC; the selected worker may run planning, package writing, rendering, results, or stitching through a hash-checked local mirror.
 
 On first start the pod installs:
 - ComfyUI
@@ -26,10 +26,11 @@ The ComfyUI address looks like `https://<pod-id>-8188.proxy.runpod.net`.
 
 ## Connect Martini Shot
 
-In Martini Shot Settings choose **Remote server**, use that address as the endpoint,
-and enter the value of `MARTINI_SHOT_TOKEN`. Set `MARTINI_SHOT_TOKEN` to a long
-random RunPod secret before deploying. It protects project files only; ComfyUI's
-own prompt endpoints still have no login.
+In Martini Shot Settings enable **Remote clip rendering**, use that address as the endpoint,
+and enter `MARTINI_SHOT_TOKEN`. Set it to a long random RunPod secret before deploying.
+Martini Shot hash-syncs the local project before remote work and downloads changed
+artifacts back into that local project when it finishes. Switch the workflow destination
+in Settings at any time; project paths and local folder actions do not change.
 
 ## Ports
 
@@ -78,7 +79,8 @@ The Martini Shot app is never blocked by this check.
 
 - **Billing:** you pay for the GPU every minute the pod runs, even when it's idle. **Terminate** the pod when you're done; your files stay on the network volume.
 - **No login:** ComfyUI has no password. Anyone with your pod's URL can use it, so don't share it.
-- **Updates:** every restart pulls the latest Martini Shot nodes.
+- **Updates:** after node updates, restart the pod; no image rebuild or model re-download is needed.
+- **Local authority:** the database and all project folders stay local. You may switch the workflow destination between any stages or clips.
 - **Logs:** if something fails, the full log is in `/workspace/logs/setup.log`. ComfyUI's own log is in `/workspace/logs/comfyui.log`.
 - **Licenses:** the models come from public Hugging Face repos (Comfy-Org, Kijai and community finetunes), each under its own license. Check them before using the output commercially.
 

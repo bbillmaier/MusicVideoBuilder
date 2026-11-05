@@ -1,6 +1,6 @@
 # Martini Shot on RunPod
 
-For people who can't run ComfyUI locally. [`setup.sh`](setup.sh) turns a RunPod GPU pod into the ComfyUI that Martini Shot drives. It installs:
+For local Martini Shot projects that need a remote ComfyUI worker. [`setup.sh`](setup.sh) runs every Martini Shot workflow stage when Remote ComfyUI worker is selected; the project itself remains local-authoritative. It installs:
 
 - ComfyUI, pinned to the commit the workflows were tested on.
 - The **MartiniShot** node pack from this repo (`comfyui/custom_nodes/MartiniShot`).
@@ -13,10 +13,12 @@ Everything goes on the pod's network volume (`/workspace`). The first start down
 
 ## Connect Martini Shot to your pod
 
-In Martini Shot Settings choose **Remote server**, enter
-`https://<pod-id>-8188.proxy.runpod.net` as the endpoint, and enter the same
-file API token configured on the pod. Projects created in this mode live on the
-pod and are not accessible as Windows folders.
+In Martini Shot Settings enable **Remote clip rendering**, enter
+`https://<pod-id>-8188.proxy.runpod.net` and the same `MARTINI_SHOT_TOKEN`
+configured on the pod. The app hash-syncs the local project into
+`output/martini_shot/<slug>` before each remote workflow and brings changed
+artifacts back afterwards. You can switch destinations between any stages or
+clips; projects never move to the pod.
 
 ## 1. Create a network volume
 
@@ -149,4 +151,4 @@ Martini Shot's requests come from Electron's main process, not a browser page, s
 
 - **Security:** ComfyUI has no login. Anyone with the `proxy.runpod.net` URL can queue jobs and read outputs. Don't share it, and stop the pod when you're done.
 - **License:** the MiniMax H3 weights and the community finetunes have their own licenses. Check them on each model page before using them.
-- **Updating the nodes:** run `tools/sync-martinishot.ps1` on the dev PC, commit, push, then restart the pod.
+- **Updating the nodes:** run `tools/sync-martinishot.ps1` on the dev PC, publish your normal node update, then restart the pod. A restart is sufficient; no image rebuild or model re-download is needed.
