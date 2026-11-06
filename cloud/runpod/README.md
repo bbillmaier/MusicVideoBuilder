@@ -5,11 +5,12 @@ For local Martini Shot projects that need a remote ComfyUI worker. [`setup.sh`](
 - ComfyUI, pinned to the commit the workflows were tested on.
 - The **MartiniShot** node pack from this repo (`comfyui/custom_nodes/MartiniShot`).
 - The **Memory Cleanup** node pack ([LAOGOU-666/Comfyui-Memory_Cleanup](https://github.com/LAOGOU-666/Comfyui-Memory_Cleanup)).
+- The **RES4LYF** node pack ([ClownsharkBatwing/RES4LYF](https://github.com/ClownsharkBatwing/RES4LYF)), pinned to the dev PC's commit, for the extra samplers and schedulers (`beta57`, `res_2s`, …) in Martini Shot's Settings.
 - The models, from their public Hugging Face repos.
 
 Then it starts ComfyUI on port 8188.
 
-Everything goes on the pod's network volume (`/workspace`). The first start downloads about 64 GB with the default models. Later starts reuse what's on the volume and only refresh the MartiniShot nodes from git.
+Everything goes on the pod's network volume (`/workspace`). The first start downloads about 70 GB with the default models. Later starts reuse what's on the volume and only refresh the MartiniShot nodes from git.
 
 ## Connect Martini Shot to your pod
 
@@ -118,11 +119,12 @@ Each model slot takes one choice, a comma list, or `none`.
 |---|---|---|
 | `fp32` ✅ | `minimax_h3_audio_vae_fp32.safetensors` | 0.6 GB |
 
-**`DIRECTOR_LLMS`** (default `qwen3vl-8b-fp8`), from Comfy-Org/Qwen3-VL. These are the vision LLMs for planning and prompt writing; pick one or more:
+**`DIRECTOR_LLMS`** (default `qwen3vl-8b-fp8,qwen3vl-8b-w4a8`), from Comfy-Org/Qwen3-VL. These are the vision LLMs for planning and prompt writing; pick one or more. A retake ("Try another take") reuses the LLM its prompt package was written with, so install every LLM your projects' packages were written with, on any machine:
 
 | Choice | Size |
 |---|---|
 | `qwen3vl-8b-fp8` ✅ | 10.6 GB |
+| `qwen3vl-8b-w4a8` ✅ | 6.3 GB |
 | `qwen3vl-8b-int8` | 9.4 GB |
 | `qwen3vl-8b-bf16` | 17.5 GB |
 | `qwen3vl-8b-nvfp4` | 6.3 GB |
@@ -150,6 +152,7 @@ The script checks every download against its known size, so a partial file is re
 | `MARTINISHOT_REF` | `main` | branch or tag to install the nodes from |
 | `GITHUB_TOKEN` | | read token for a private repo; removed from the stored git URL after cloning |
 | `COMFYUI_REF` | the tested commit | `master` for the latest ComfyUI |
+| `RES4LYF_REF` | the dev PC's commit | RES4LYF branch, tag or commit; `none` skips it (then pick a built-in scheduler such as `beta` in Settings) |
 | `COMFYUI_ARGS` | | extra ComfyUI flags, e.g. `--reserve-vram 2` |
 | `TORCH_INDEX_URL` | PyTorch cu130 | wheel index used to install or migrate the requested stack |
 | `TORCH_VERSION` / `TORCHVISION_VERSION` / `TORCHAUDIO_VERSION` | `2.10.0` / `0.25.0` / `2.10.0` | Exact versions, constrained during subsequent dependency installs |

@@ -1232,6 +1232,11 @@ export async function reviseClipPrompt(projectId: unknown, clipIndex: unknown, r
     const shot = record && creatives ? shotSettings(record, refOptions(creatives, rows)) : null;
     const { node, changes, swaps } = revisionChanges(value.changes, shot);
     if (Object.keys(node).length && !shot) throw new Error("This older prompt package has no editable clip source. Write a fresh prompt package first.");
+    if (mode === "Try another take" && shot && node.intention === undefined && row.section_number && parseJson<ClipMetaExtra>(row.meta)?.storyDriven) {
+      // The section action changed since this clip was written (e.g. its section edit could not rewrite it): a new take uses it.
+      const planned = (await planOverview(project.id)).plan?.sections.find((item) => item.number === row.section_number);
+      if (planned?.beat.trim() && planned.beat !== row.action) node.intention = planned.beat;
+    }
     const chain = clipChain(rows, index);
     const carried = swaps ? chain.followers : [];
     if (carried.length && value.confirmDownstream !== true) {
@@ -1256,6 +1261,7 @@ export async function reviseClipPrompt(projectId: unknown, clipIndex: unknown, r
       if (option("location")) fields.location = option("location")!.name;
       if (option("person")) meta.subject = option("person")!.name;
       if (target.clip_index === index && changes.scene) fields.scene = changes.scene;
+      if (target.clip_index === index && typeof node.intention === "string") fields.action = node.intention;
       if (target.clip_index === index && changes.camera) meta.camera = changes.camera.name === "Custom" ? changes.camera.text || "Custom" : changes.camera.name;
       if (option("person") || (target.clip_index === index && changes.camera)) fields.meta = JSON.stringify(meta);
       if (Object.keys(fields).length) update("render_clips", target.id, { ...fields, updated_at: now() });

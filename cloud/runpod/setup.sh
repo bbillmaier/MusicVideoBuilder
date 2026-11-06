@@ -34,13 +34,16 @@ MARTINISHOT_REPO="${MARTINISHOT_REPO:-}"          # e.g. https://github.com/<you
 MARTINISHOT_REF="${MARTINISHOT_REF:-main}"
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"                  # only needed for a private repo
 MEMORY_CLEANUP_REPO="${MEMORY_CLEANUP_REPO:-https://github.com/LAOGOU-666/Comfyui-Memory_Cleanup.git}"
+# RES4LYF adds samplers and schedulers (beta57, res_2s, ...) that Martini Shot's Settings can pick. "none" skips it.
+RES4LYF_REPO="${RES4LYF_REPO:-https://github.com/ClownsharkBatwing/RES4LYF.git}"
+RES4LYF_REF="${RES4LYF_REF:-e716cd1cb2c5cff90131bf4914b75b75a0489d48}" # the commit on the dev PC
 
 # Model choices (comma lists allowed; "none" downloads nothing for that slot).
 RENDER_MODEL="${RENDER_MODEL:-singularity-prism-pika}"
 TEXT_ENCODER="${TEXT_ENCODER:-int8}"
 VIDEO_VAE="${VIDEO_VAE:-fp16}"
 AUDIO_VAE="${AUDIO_VAE:-fp32}"
-DIRECTOR_LLMS="${DIRECTOR_LLMS:-qwen3vl-8b-fp8}"
+DIRECTOR_LLMS="${DIRECTOR_LLMS:-qwen3vl-8b-fp8,qwen3vl-8b-w4a8}"  # w4a8: the dev PC's choice; retakes need the package's LLM
 LIVE_PREVIEW="${LIVE_PREVIEW:-1}"
 WHISPER_MODEL="${WHISPER_MODEL:-none}"            # pre-download, e.g. small; otherwise fetched on first use
 EXTRA_MODELS="${EXTRA_MODELS:-}"                  # "folder|url[|filename];folder|url"
@@ -109,6 +112,7 @@ declare -A LLMS=(
   [qwen3vl-8b-fp8]="text_encoders|qwen3vl_8b_fp8_scaled.safetensors|$HF/Comfy-Org/Qwen3-VL/resolve/main/text_encoders/qwen3vl_8b_fp8_scaled.safetensors|10588637512"
   [qwen3vl-8b-int8]="text_encoders|qwen3vl_8b_int8_convrot.safetensors|$HF/Comfy-Org/Qwen3-VL/resolve/main/text_encoders/qwen3vl_8b_int8_convrot.safetensors|9350798360"
   [qwen3vl-8b-bf16]="text_encoders|qwen3vl_8b_bf16.safetensors|$HF/Comfy-Org/Qwen3-VL/resolve/main/text_encoders/qwen3vl_8b_bf16.safetensors|17534334616"
+  [qwen3vl-8b-w4a8]="text_encoders|qwen3vl_8b_w4a8.safetensors|$HF/Comfy-Org/Qwen3-VL/resolve/main/text_encoders/qwen3vl_8b_w4a8.safetensors|6312105364"
   [qwen3vl-8b-nvfp4]="text_encoders|qwen3vl_8b_nvfp4.safetensors|$HF/Comfy-Org/Qwen3-VL/resolve/main/text_encoders/qwen3vl_8b_nvfp4.safetensors|6305221764"
   [qwen3vl-4b-fp8]="text_encoders|qwen3vl_4b_fp8_scaled.safetensors|$HF/Comfy-Org/Qwen3-VL/resolve/main/text_encoders/qwen3vl_4b_fp8_scaled.safetensors|5242467968"
   [qwen3vl-4b-bf16]="text_encoders|qwen3vl_4b_bf16.safetensors|$HF/Comfy-Org/Qwen3-VL/resolve/main/text_encoders/qwen3vl_4b_bf16.safetensors|8875719384"
@@ -158,7 +162,7 @@ fetch_choice() {  # fetch_choice <slot label> <catalog name> <comma list>
 log "System packages"
 if command -v apt-get >/dev/null && [[ "$(id -u)" == 0 ]]; then
   need=()
-  for p in git aria2 ffmpeg python3-venv; do
+  for p in git aria2 ffmpeg python3-venv libgl1 libglib2.0-0; do  # libgl1/libglib: OpenCV (RES4LYF)
     dpkg -s "$p" >/dev/null 2>&1 || need+=("$p")
   done
   if [[ ${#need[@]} -gt 0 ]]; then
@@ -222,7 +226,7 @@ if ! torch_matches >/dev/null 2>&1; then
     "torchaudio==$TORCHAUDIO_VERSION" --index-url "$TORCH_INDEX_URL"
   torch_matches || die "Installed PyTorch stack does not match the requested versions"
   # Compiled extensions from the previous Torch/CUDA stack must be rebuilt.
-  "$PY" -m pip uninstall -y sageattention
+  if "$PY" -m pip show -q sageattention >/dev/null 2>&1; then "$PY" -m pip uninstall -y -q sageattention; fi
 fi
 # Prevent later node requirements from silently replacing the selected stack.
 printf 'torch==%s\ntorchvision==%s\ntorchaudio==%s\n' \
@@ -255,7 +259,20 @@ if [[ ! -d "$NODES/comfyui_memory_cleanup/.git" ]]; then
 fi
 echo "  comfyui_memory_cleanup @ $(git -C "$NODES/comfyui_memory_cleanup" rev-parse --short HEAD)"
 
-for req in "$NODES/MartiniShot/requirements.txt" "$NODES/comfyui_memory_cleanup/requirements.txt"; do
+if [[ "$RES4LYF_REF" != none ]]; then
+  if [[ ! -d "$NODES/RES4LYF/.git" ]]; then
+    git clone --quiet "$RES4LYF_REPO" "$NODES/RES4LYF"
+  fi
+  git -C "$NODES/RES4LYF" fetch --quiet origin
+  if git -C "$NODES/RES4LYF" rev-parse --verify --quiet "origin/$RES4LYF_REF" >/dev/null; then
+    git -C "$NODES/RES4LYF" checkout --quiet --force "origin/$RES4LYF_REF"   # a branch name
+  else
+    git -C "$NODES/RES4LYF" checkout --quiet --force "$RES4LYF_REF"          # a tag or commit
+  fi
+  echo "  RES4LYF @ $(git -C "$NODES/RES4LYF" rev-parse --short HEAD)"
+fi
+
+for req in "$NODES/MartiniShot/requirements.txt" "$NODES/comfyui_memory_cleanup/requirements.txt" "$NODES/RES4LYF/requirements.txt"; do
   if [[ -f "$req" ]]; then "$PY" -m pip install --quiet -r "$req"; fi
 done
 

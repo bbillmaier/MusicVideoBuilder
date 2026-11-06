@@ -19,7 +19,7 @@ This template installs the ComfyUI worker used by the Martini Shot desktop app; 
 On first start the pod installs:
 - ComfyUI
 - the Martini Shot nodes
-- the MiniMax H3 video models (about 64 GB)
+- the MiniMax H3 video models (about 70 GB)
 
 Everything is stored on your network volume, so later starts take a few minutes instead of an hour.
 
@@ -28,7 +28,7 @@ Everything is stored on your network volume, so later starts take a few minutes 
 
 - **Container image:** `runpod/pytorch:1.6.0-cu1300-torch291-ubuntu2404`. Setup installs Torch 2.10.0/cu130 and builds SageAttention 2.2.0 with the CUDA 13.0 compiler. The host driver must support CUDA 13.
 - **Existing CUDA 12.8 volumes:** update the container image and refresh the setup script before launching it. Setup upgrades the Python environment and rebuilds SageAttention while keeping downloaded models. See the full README's CUDA 13 migration instructions.
-- **Network volume:** attach one of **120 GB or more**. Without it, the 64 GB of models download again on every start.
+- **Network volume:** attach one of **120 GB or more**. Without it, the 70 GB of models download again on every start.
 - **GPU:** 48 GB of VRAM or more (L40S, RTX 6000 Ada, A6000, A100, H100).
 - **RAM:** 96 GB or more is recommended.
 

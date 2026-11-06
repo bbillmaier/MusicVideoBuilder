@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -773,6 +774,43 @@ def _base_message(record: dict[str, Any]) -> str:
     return record.get("base_message") or record["message"].split("\n\nREVISION REQUEST:")[0]
 
 
+_INTENTION_RE = re.compile(r"Shot intention \((?:primary action|what the choreography expresses)\): (.*?)\. (?:Preserve|Choreograph)", re.S)
+_CAMERA_PREFIX = "Chosen camera (keep this framing and movement): "
+_LOCATION_PREFIXES = ("Location details: ", "Location (do not label it): ")
+
+
+def _current_message(base: str, record: dict[str, Any]) -> str:
+    """The package writer's message with the shot settings changed since then written in place.
+
+    A small LLM follows the bulk of the message, so leaving the old intention, camera, or location in it and only
+    appending a producer note that overrides them is not enough. The notes are still added after it."""
+    notes = record.get("producer_notes") or {}
+    intention = _clean(record.get("intention_override")).rstrip(".")
+    old_intention = ""
+    paragraphs: list[str] = []
+    for para in base.split("\n\n"):
+        match = _INTENTION_RE.match(para) if intention else None
+        if match:
+            old_intention = match.group(1).rstrip(".")
+            para = para[:match.start(1)] + intention + para[match.end(1):]
+        elif para.startswith(_CAMERA_PREFIX) and "camera" in notes:
+            if record.get("ask_camera") or not record.get("camera_sentence"):
+                continue  # the LLM picks the camera; the CAMERA header asks for it
+            para = (_CAMERA_PREFIX + record["camera_sentence"] + " Stage the action so its important body movements "
+                    "and interactions remain readable in this view.")
+        elif para.startswith(_LOCATION_PREFIXES) and "location" in notes:
+            text = _clean(record.get("location_text"))
+            if not text:
+                continue
+            para = next(p for p in _LOCATION_PREFIXES if para.startswith(p)) + text
+        paragraphs.append(para)
+    message = "\n\n".join(paragraphs)
+    if old_intention and old_intention != intention:
+        # the same words also lead the director's notes (MUST: ...)
+        message = message.replace(old_intention, intention)
+    return message
+
+
 def _swap_ref(folder: Path, record: dict[str, Any], role: str, file: Any) -> str:
     """Points the clip's reference of this role at another image already in the package. Returns a note, or ''."""
     if role not in SWAP_ROLES:
@@ -965,7 +1003,7 @@ class MiniMaxH3MusicVideoPromptRevision:
         if take:
             base = _base_message(record)
             record["base_message"] = base
-            message = base + "\n\n" + REVISION_REQUEST
+            message = _current_message(base, record) + "\n\n" + REVISION_REQUEST
             if record.get("producer_notes"):
                 message += "\n\nPRODUCER CHANGES (these override anything above):\n" + "\n".join(
                     f"- {note}" for note in record["producer_notes"].values())
