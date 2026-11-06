@@ -83,11 +83,27 @@ test("package report: clip table, per-clip notes, warnings, polish", () => {
   assert.deepEqual(parsed.table.get(4), { clip: 4, shot: 3, scene: "B-roll", transition: "Hard cut", frames: 209 });
   assert.deepEqual(parsed.polish, ["style (recurring motif weight 0%; shots 1-3): wet neon"]);
   assert.deepEqual(parsed.warnings, ["Shot 3 is a New angle without a location image."]);
-  assert.equal(actionValidation(parsed.clipNotes.get(1)!).tone, "ok");
+  // an older package's "checked" note is not presented as a validated receipt
+  assert.match(actionValidation(parsed.clipNotes.get(1)!).value, /^Checked \(older package/);
+  assert.equal(actionValidation(parsed.clipNotes.get(1)!).tone, "none");
   assert.match(actionValidation(parsed.clipNotes.get(2)!).value, /Could not repair: sits on a machine/);
   assert.equal(actionValidation(parsed.clipNotes.get(2)!).tone, "warn");
   assert.match(actionValidation(parsed.clipNotes.get(3)!).value, /^Repaired/);
   assert.equal(actionValidation([]).tone, "none");
+});
+
+test("action validation: validated, unverified (placeholder or unknown), and unresolved stay distinct", () => {
+  const valid = actionValidation(["NOTE: action validation validated: needs=wet brick wall, start_posture=running."]);
+  assert.equal(valid.tone, "ok");
+  assert.match(valid.value, /^Valid — needs=wet brick wall/);
+  const placeholder = actionValidation(["NOTE: action validation unverified: receipt 'Supported' is template text, not a concrete dependency."]);
+  assert.equal(placeholder.tone, "info");
+  assert.match(placeholder.value, /^Unverified — receipt 'Supported'/);
+  assert.doesNotMatch(placeholder.value, /Valid/);
+  const repairedButUnknown = actionValidation(["NOTE: repaired action validation: the action stops", "NOTE: action validation unverified: need 'door' is not in the recorded location evidence."]);
+  assert.match(repairedButUnknown.value, /^Repaired: the action stops · still unverified: need 'door'/);
+  assert.equal(repairedButUnknown.tone, "info");
+  assert.equal(actionValidation(["WARNING: action validation could not repair: Continue changes posture from 'running' to 'lying down' at the join"]).tone, "warn");
 });
 
 test("manifest validation and clip matching by song time", () => {
@@ -166,7 +182,7 @@ test("workflow templates: placeholders fill, render package passes as a literal 
     project_name: "static-heart", seed: 7, director_llm: "Qwen | q.safetensors", render_name: "render-01", motif_weight: 0.25,
     dance_style: "K-Pop", target_shot_seconds: 8, min_shot_seconds: 3, max_shot_seconds: 10, cut_rate_vs_energy: 0.5,
     broll_amount: 0.3, performance_vs_dance: 0.4, freeform_amount: 0, location_variety: 0.5, chorus_consistency: true,
-    outfit_change_rate: 0.3, continue_bias: 0.5, hard_cuts_change_location: true, lip_sync: false,
+    outfit_change_rate: 0.3, continue_bias: 0.5, hard_cuts_change_location: true, lip_sync: false, surreal_motifs: false,
   }) as Record<string, { class_type: string; inputs: Record<string, unknown> }>;
   assert.deepEqual(Object.values(filled).map((node) => node.class_type).filter((type) => type.startsWith("MartiniShot")),
     ["MartiniShotOpenProject", "MartiniShotLoadStoryPlan", "MartiniShotResolveLocations", "MartiniShotBuildProductionPlan", "MartiniShotWritePromptPackage"]);
@@ -175,6 +191,7 @@ test("workflow templates: placeholders fill, render package passes as a literal 
   assert.equal(filled.production.inputs.seed, 7);
   assert.equal(filled.production.inputs.target_shot_seconds, 8);
   assert.equal(filled.package.inputs.lip_sync, false);
+  assert.equal(filled.package.inputs.surreal_motifs, false);
 
   const render = JSON.parse(fs.readFileSync(path.join(dir, "05-render-next-clip.json"), "utf-8"));
   const renderPackage = { project: "static-heart", folder: "E:\\out\\martini_shot\\static-heart\\render-01", render_name: "render-01" };

@@ -25,6 +25,9 @@ import {
 import {
   configureResultsService, exportReport, finalOutputFolder, finalVideoFile, finalVideoPath, reportText, resultsOverview, startStitch,
 } from "./results-service";
+import {
+  cancelPostProcessing, configurePostProcessService, postArtifactFile, postProcessOverview, savePostSettings, selectPostVersion, startPostProcessing, workerInfo,
+} from "./postprocess-service";
 import { configureTimelineService, discardUnsavedTimeline, saveTimeline, songAnalysisRunning, songTimeline, startSongAnalysis, timelineSaveImpact } from "./timeline-service";
 
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
@@ -146,6 +149,14 @@ app.whenReady().then(() => {
     onChange: (projectId) => BrowserWindow.getAllWindows().forEach((window) => window.webContents.send("martini:results-changed", projectId)),
   });
 
+  configurePostProcessService({
+    isDevelopment,
+    onChange: (projectId) => BrowserWindow.getAllWindows().forEach((window) => {
+      window.webContents.send("martini:post-changed", projectId);
+      window.webContents.send("martini:results-changed", projectId); // the stitch's readiness depends on post-processing
+    }),
+  });
+
   protocol.handle("martini-asset", async (request) => {
     const url = new URL(request.url);
     let file: string | null = null;
@@ -162,6 +173,11 @@ app.whenReady().then(() => {
       // martini-asset://final/<finalId>: only the recorded final video file of that stitch, inside its project folder.
       const finalId = decodeURIComponent(url.pathname.slice(1));
       if (/^[0-9a-f-]{36}$/i.test(finalId)) file = finalVideoFile(finalId);
+    }
+    else if (url.hostname === "post") {
+      // martini-asset://post/<attemptId>: only the recorded output of a succeeded post-processing attempt, inside its project.
+      const attemptId = decodeURIComponent(url.pathname.slice(1));
+      if (/^[0-9a-f-]{36}$/i.test(attemptId)) file = postArtifactFile(attemptId);
     }
     if (url.hostname === "file") file = decodeURIComponent(url.pathname.slice(1));
     if (!file) return new Response("Not found", { status: 404 });
@@ -317,6 +333,13 @@ app.whenReady().then(() => {
     return file;
   });
   ipcMain.handle("martini:results-rerender", (_event, projectId: unknown, request: unknown) => rerenderUnchanged(projectId, request));
+  // Post-processing: main re-validates the project, clip numbers, settings, references, and attempt ids.
+  ipcMain.handle("martini:post-overview", (_event, projectId: unknown) => postProcessOverview(projectId));
+  ipcMain.handle("martini:post-save-settings", (_event, projectId: unknown, request: unknown) => savePostSettings(projectId, request));
+  ipcMain.handle("martini:post-select", (_event, projectId: unknown, request: unknown) => selectPostVersion(projectId, request));
+  ipcMain.handle("martini:post-process", (_event, projectId: unknown, clips: unknown) => startPostProcessing(projectId, clips));
+  ipcMain.handle("martini:post-cancel", (_event, projectId: unknown) => cancelPostProcessing(projectId));
+  ipcMain.handle("martini:post-worker-info", () => workerInfo(true));
   ipcMain.handle("martini:open-comfyui", async () => {
     const settings = await getMachineSettings();
     await shell.openExternal(comfyEndpoint(settings.comfyUrl, "local"));

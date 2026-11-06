@@ -55,6 +55,20 @@ SAGE_REPO="${SAGE_REPO:-https://github.com/thu-ml/SageAttention.git}"
 SAGE_REF="${SAGE_REF:-eb615cf6cf4d221338033340ee2de1c37fbdba4a}" # v2.2.0
 WHEEL_DIR="${WHEEL_DIR:-$WORKSPACE/wheels}"       # built wheels are kept here, per torch version and GPU
 
+# Post-processing (face treatment + SeedVR2 upscaling, app page "Post-processing").
+POST_PROCESSING="${POST_PROCESSING:-1}"           # 1 = install ReActor, SeedVR2 and their models; 0 = skip
+# Worker default memory mode for post-processing jobs: low_vram (16 GB VRAM / 64 GB RAM) or high_vram (48 GB VRAM).
+# Unset means high_vram. A job's explicit Low VRAM / High VRAM choice in the app overrides it.
+POST_PROCESSING_VRAM_MODE_RAW="${POST_PROCESSING_VRAM_MODE-}"
+POST_PROCESSING_MODELS="${POST_PROCESSING_MODELS:-mode}"  # mode (the worker default's), all, low_vram, high_vram, face, none
+REACTOR_REPO="${REACTOR_REPO:-https://codeberg.org/Gourieff/comfyui-reactor-node.git}"
+REACTOR_REF="${REACTOR_REF:-2add1139d491fefff2d3a60e52b6b2b6d5d09e5d}"   # v0.7.0-a2, the dev PC's checkout
+SEEDVR2_REPO="${SEEDVR2_REPO:-https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler.git}"
+SEEDVR2_REF="${SEEDVR2_REF:-4490bd1f482e026674543386bb2a4d176da245b9}"   # v2.5.24, the dev PC's version
+# ONNX Runtime for ReActor. 1.27+ PyPI builds target CUDA 13 (this stack); 1.26 and older target CUDA 12 and would fall
+# back to the CPU here. Pinned and added to the pip constraints so node requirements cannot replace it.
+ONNXRUNTIME_GPU_VERSION="${ONNXRUNTIME_GPU_VERSION:-1.31.0}"
+
 SKIP_MODELS="${SKIP_MODELS:-0}"
 SKIP_START="${SKIP_START:-0}"                     # 1 = provision only, do not start ComfyUI
 RUNPOD_SERVICES="${RUNPOD_SERVICES:-1}"           # 1 = also run the image's /start.sh (SSH, Jupyter)
@@ -72,6 +86,15 @@ log()  { printf '\n[martini-shot %s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 warn() { printf '\n[martini-shot %s] WARNING: %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 die()  { printf '\n[martini-shot] ERROR: %s\n' "$*" >&2; exit 1; }
 trap 'die "line $LINENO: $BASH_COMMAND"' ERR
+
+# Validate the post-processing memory mode before any long work: a wrong preset can exhaust memory on the pod.
+pp_mode="$(tr '[:upper:]' '[:lower:]' <<<"$POST_PROCESSING_VRAM_MODE_RAW" | tr -d '[:space:]')"
+case "$pp_mode" in
+  "") PP_MODE=high_vram; PP_MODE_SOURCE="unset, so the default" ;;
+  low_vram|high_vram) PP_MODE="$pp_mode"; PP_MODE_SOURCE="POST_PROCESSING_VRAM_MODE"; export POST_PROCESSING_VRAM_MODE="$pp_mode" ;;
+  *) die "POST_PROCESSING_VRAM_MODE='$POST_PROCESSING_VRAM_MODE_RAW' is not valid. Use low_vram or high_vram, or leave it unset for high_vram." ;;
+esac
+case "$POST_PROCESSING_MODELS" in mode|all|low_vram|high_vram|face|none) ;; *) die "POST_PROCESSING_MODELS='$POST_PROCESSING_MODELS' is not valid. Use mode, all, low_vram, high_vram, face or none." ;; esac
 
 as_list() { tr ',' '\n' <<<"$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' || true; }
 
@@ -119,17 +142,28 @@ declare -A LLMS=(
 )
 TAEH3="vae_approx|taeh3.safetensors|$HF/Kijai/MiniMax-H3-TAE/resolve/main/vae_approx/taeh3.safetensors|9791388"
 
-download() {  # download <folder> <filename> <url> [expected size]
-  local folder="$1" name="$2" url="$3" size="${4:-}"
+verified() {  # verified <file> <sha256>: hash once, then trust a marker while size and mtime are unchanged
+  local file="$1" sha="$2" marker="$1.sha256-ok" stamp
+  stamp="$sha $(stat -c '%s %Y' "$file")"
+  [[ -f "$marker" && "$(cat "$marker")" == "$stamp" ]] && return 0
+  [[ "$(sha256sum "$file" | cut -d' ' -f1)" == "$sha" ]] || return 1
+  printf '%s' "$stamp" >"$marker"
+}
+
+download() {  # download <folder> <filename> <url> [expected size] [expected sha256]
+  local folder="$1" name="$2" url="$3" size="${4:-}" sha="${5:-}"
   local dir="$COMFY_DIR/models/$folder" dest part
   dest="$dir/$name"; part="$dest.part"
   mkdir -p "$dir"
   if [[ -f "$dest" ]]; then
     if [[ -z "$size" || "$(stat -c %s "$dest")" == "$size" ]]; then
-      echo "  ok      $folder/$name"; return 0
+      if [[ -z "$sha" ]] || verified "$dest" "$sha"; then echo "  ok      $folder/$name"; return 0; fi
+      warn "$folder/$name has the right size but the wrong sha256; downloading it again"
+      rm -f "$dest" "$dest.sha256-ok"
+    else
+      warn "$folder/$name has the wrong size; downloading it again"
+      mv -f "$dest" "$part"   # resume from what is there
     fi
-    warn "$folder/$name has the wrong size; downloading it again"
-    mv -f "$dest" "$part"   # resume from what is there
   fi
   echo "  fetch   $folder/$name ${size:+($(numfmt --to=iec "$size"))}"
   local auth=()
@@ -144,7 +178,39 @@ download() {  # download <folder> <filename> <url> [expected size]
   if [[ -n "$size" && "$(stat -c %s "$part")" != "$size" ]]; then
     die "$name: got $(stat -c %s "$part") bytes, expected $size. Re-run to resume."
   fi
+  if [[ -n "$sha" && "$(sha256sum "$part" | cut -d' ' -f1)" != "$sha" ]]; then
+    rm -f "$part"
+    die "$name: sha256 does not match the published file ($sha). The partial download was removed; re-run setup."
+  fi
   mv -f "$part" "$dest"
+  if [[ -n "$sha" ]]; then printf '%s' "$sha $(stat -c '%s %Y' "$dest")" >"$dest.sha256-ok"; fi
+  return 0
+}
+
+# Post-processing models: "folder|filename|url|size|sha256" (sizes and hashes checked 2026-11-06 against the upstream
+# repos; the SeedVR2 hashes also match SeedVR2's own model registry).
+PP_FACE_MODELS=(
+  "insightface|inswapper_128.onnx|$HF/datasets/Gourieff/ReActor/resolve/main/models/inswapper_128.onnx|554253681|e4a3f08c753cb72d04e10aa0f7dbe3deebbf39567d4ead6dce08e98aa49e16af"
+  "insightface/models|buffalo_l.zip|$HF/datasets/Gourieff/ReActor/resolve/main/models/buffalo_l.zip|288621354|80ffe37d8a5940d59a7384c201a2a38d4741f2f3c51eef46ebb28218a7b0ca2f"
+  "facerestore_models|codeformer-v0.1.0.pth|$HF/datasets/Gourieff/ReActor/resolve/main/models/facerestore_models/codeformer-v0.1.0.pth|376637898|1009e537e0c2a07d4cabce6355f53cb66767cd4b4297ec7a4a64ca4b8a5684b7"
+  "facedetection|detection_Resnet50_Final.pth|https://github.com/xinntao/facexlib/releases/download/v0.1.0/detection_Resnet50_Final.pth|109497761|6d1de9c2944f2ccddca5f5e010ea5ae64a39845a86311af6fdf30841b0a5a16d"
+  "facedetection|parsing_parsenet.pth|https://github.com/sczhou/CodeFormer/releases/download/v0.1.0/parsing_parsenet.pth|85331193|3d558d8d0e42c20224f13cf5a29c79eba2d59913419f945545d8cf7b72920de2"
+  "ultralytics/bbox|hand_yolov8s.pt|$HF/Bingsu/adetailer/resolve/main/hand_yolov8s.pt|22507643|70b540063fbc385736d8258970744a4afbc4cbf7932134bae3b24cdadeadec06"
+)
+PP_SEEDVR2_VAE="SEEDVR2|ema_vae_fp16.safetensors|$HF/numz/SeedVR2_comfyUI/resolve/main/ema_vae_fp16.safetensors|501324814|20678548f420d98d26f11442d3528f8b8c94e57ee046ef93dbb7633da8612ca1"
+declare -A PP_MODE_MODELS=(
+  [low_vram]="SEEDVR2|seedvr2_ema_3b_fp8_e4m3fn.safetensors|$HF/numz/SeedVR2_comfyUI/resolve/main/seedvr2_ema_3b_fp8_e4m3fn.safetensors|3391544696|3bf1e43ebedd570e7e7a0b1b60d6a02e105978f505c8128a241cde99a8240cff"
+  [high_vram]="SEEDVR2|seedvr2_ema_7b_fp16.safetensors|$HF/numz/SeedVR2_comfyUI/resolve/main/seedvr2_ema_7b_fp16.safetensors|16479334424|7b8241aa957606ab6cfb66edabc96d43234f9819c5392b44d2492d9f0b0bbe4a"
+)
+fetch_entry() { IFS='|' read -r folder name url size sha <<<"$1"; download "$folder" "$name" "$url" "$size" "$sha" </dev/null; }
+
+pin_node() {  # pin_node <dir name> <repo> <ref>: clone once, then check out exactly <ref>
+  local dir="$NODES/$1"
+  [[ -d "$dir/.git" ]] || git clone --quiet "$2" "$dir"
+  git -C "$dir" fetch --quiet origin
+  if git -C "$dir" rev-parse --verify --quiet "origin/$3" >/dev/null; then git -C "$dir" checkout --quiet --force "origin/$3"
+  else git -C "$dir" checkout --quiet --force "$3"; fi
+  echo "  $1 @ $(git -C "$dir" rev-parse --short HEAD)"
 }
 
 fetch_choice() {  # fetch_choice <slot label> <catalog name> <comma list>
@@ -272,7 +338,19 @@ if [[ "$RES4LYF_REF" != none ]]; then
   echo "  RES4LYF @ $(git -C "$NODES/RES4LYF" rev-parse --short HEAD)"
 fi
 
-for req in "$NODES/MartiniShot/requirements.txt" "$NODES/comfyui_memory_cleanup/requirements.txt" "$NODES/RES4LYF/requirements.txt"; do
+PP_REQS=()
+if [[ "$POST_PROCESSING" == 1 ]]; then
+  # ReActor's own install.py is not run: it may install a CUDA 12 onnxruntime build. Its requirements.txt is installed
+  # below under the torch constraints, and the CUDA 13 onnxruntime-gpu is pinned here.
+  pin_node comfyui-reactor-node "$REACTOR_REPO" "$REACTOR_REF"
+  pin_node seedvr2_videoupscaler "$SEEDVR2_REPO" "$SEEDVR2_REF"
+  if "$PY" -m pip show -q onnxruntime >/dev/null 2>&1; then "$PY" -m pip uninstall -y -q onnxruntime; fi  # the CPU wheel shadows the GPU one
+  grep -q '^onnxruntime-gpu==' "$VENV_DIR/torch-constraints.txt" || printf 'onnxruntime-gpu==%s\n' "$ONNXRUNTIME_GPU_VERSION" >>"$VENV_DIR/torch-constraints.txt"
+  "$PY" -m pip install --quiet "onnxruntime-gpu==$ONNXRUNTIME_GPU_VERSION"
+  PP_REQS=("$NODES/comfyui-reactor-node/requirements.txt" "$NODES/seedvr2_videoupscaler/requirements.txt")
+fi
+
+for req in "$NODES/MartiniShot/requirements.txt" "$NODES/comfyui_memory_cleanup/requirements.txt" "$NODES/RES4LYF/requirements.txt" "${PP_REQS[@]}"; do
   if [[ -f "$req" ]]; then "$PY" -m pip install --quiet -r "$req"; fi
 done
 
@@ -291,6 +369,21 @@ assert (a.half() @ a.half()).float().sum().item() == 256 ** 3, "cuBLAS fp16 matm
 torch.cuda.synchronize()
 print(f"GPU smoke test passed: {torch.cuda.get_device_name(0)}")
 PYCODE
+
+if [[ "$POST_PROCESSING" == 1 ]]; then
+  # torch first, as ComfyUI does: onnxruntime-gpu then finds the CUDA 13 / cuDNN 9 libraries torch already loaded.
+  # A real session on the face detector shows whether the CUDA provider loads or ONNX Runtime falls back to the CPU.
+  "$PY" - "$COMFY_DIR/models/insightface/models/buffalo_l/det_10g.onnx" <<'PYCODE' || warn "onnxruntime-gpu cannot use CUDA on this pod; ReActor would run on the CPU (slow). The app shows this per job."
+import os, sys, torch, onnxruntime as ort
+from onnxruntime.capi import version_info
+print(f"onnxruntime {ort.__version__} (built for CUDA {getattr(version_info, 'cuda_version', '?')}), providers: {ort.get_available_providers()}")
+assert "CUDAExecutionProvider" in ort.get_available_providers()
+if os.path.isfile(sys.argv[1]):
+    session = ort.InferenceSession(sys.argv[1], providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
+    print(f"face detector session runs on {session.get_providers()[0]}")
+    assert session.get_providers()[0] == "CUDAExecutionProvider"
+PYCODE
+fi
 
 # ---------------------------------------------------------------- 3b. SageAttention (in the background)
 # SageAttention 2 is built from source for this GPU the first time (about 10 minutes) and the wheel is cached in
@@ -385,6 +478,27 @@ if [[ "$SKIP_MODELS" != 1 ]]; then
       download "$folder" "$name" "$url"
     done
   fi
+  if [[ "$POST_PROCESSING" == 1 && "$POST_PROCESSING_MODELS" != none ]]; then
+    log "Post-processing models (worker default: $PP_MODE, $PP_MODE_SOURCE; POST_PROCESSING_MODELS=$POST_PROCESSING_MODELS)"
+    for entry in "${PP_FACE_MODELS[@]}"; do fetch_entry "$entry"; done
+    buffalo="$COMFY_DIR/models/insightface/models"
+    if [[ ! -f "$buffalo/buffalo_l/det_10g.onnx" ]]; then
+      echo "  unpack  insightface/models/buffalo_l"
+      "$PY" -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$buffalo/buffalo_l.zip" "$buffalo/buffalo_l"
+    fi
+    [[ -f "$buffalo/buffalo_l/det_10g.onnx" ]] || die "buffalo_l.zip did not contain det_10g.onnx"
+    pp_modes=()
+    case "$POST_PROCESSING_MODELS" in
+      mode) pp_modes=("$PP_MODE") ;; all) pp_modes=(low_vram high_vram) ;; low_vram|high_vram) pp_modes=("$POST_PROCESSING_MODELS") ;; face) pp_modes=() ;;
+    esac
+    if [[ ${#pp_modes[@]} -gt 0 ]]; then
+      fetch_entry "$PP_SEEDVR2_VAE"
+      for m in "${pp_modes[@]}"; do fetch_entry "${PP_MODE_MODELS[$m]}"; done
+    fi
+    if [[ " ${pp_modes[*]:-} " != *" $PP_MODE "* ]]; then
+      warn "Post-processing: the worker default is $PP_MODE but its SeedVR2 model was not requested (POST_PROCESSING_MODELS=$POST_PROCESSING_MODELS); upscaling jobs in that mode will be refused."
+    fi
+  fi
   if [[ -n "$WHISPER_MODEL" && "$WHISPER_MODEL" != none ]]; then
     echo "  whisper $WHISPER_MODEL"
     "$PY" -c "import whisper; whisper.load_model('$WHISPER_MODEL', device='cpu')" >/dev/null
@@ -414,6 +528,7 @@ fi
 
 # ---------------------------------------------------------------- 5. start
 log "Setup finished"
+if [[ "$POST_PROCESSING" == 1 ]]; then echo "  Post-processing worker default: $PP_MODE ($PP_MODE_SOURCE)"; fi
 if [[ -n "${RUNPOD_POD_ID:-}" ]]; then
   echo "  Martini Shot ComfyUI URL: https://${RUNPOD_POD_ID}-${COMFYUI_PORT}.proxy.runpod.net"
 fi

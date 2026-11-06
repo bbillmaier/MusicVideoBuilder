@@ -58,6 +58,7 @@
         "section_motifs": true,
         "lip_sync": "{{lip_sync}}",
         "recurring_style_motif_weight": "{{motif_weight}}",
+        "surreal_motifs": "{{surreal_motifs}}",
         "validate_actions": true,
         "temperature": 0.8,
         "max_tokens": 1200,

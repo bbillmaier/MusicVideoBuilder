@@ -144,6 +144,52 @@ Each model slot takes one choice, a comma list, or `none`.
 
 The script checks every download against its known size, so a partial file is resumed instead of being used.
 
+### Post-processing
+
+The app's **Post-processing** page (between Produce and Results) runs, per clip and only when asked: ReActor face restoration (CodeFormer) or face replacement with the chosen character reference, then optional SeedVR2 restoration/upscaling. Original renders are never changed. With `POST_PROCESSING=1` (default) setup installs:
+
+- **ReActor** from `REACTOR_REPO` at `REACTOR_REF` (Codeberg `Gourieff/comfyui-reactor-node`, v0.7.0-a2, the dev PC's commit). Its `install.py` is **not** run, because it can install a CUDA 12 onnxruntime. Its `requirements.txt` is installed under the torch constraints.
+- **SeedVR2** from `SEEDVR2_REPO` at `SEEDVR2_REF` (`numz/ComfyUI-SeedVR2_VideoUpscaler`, v2.5.24).
+- **onnxruntime-gpu** `ONNXRUNTIME_GPU_VERSION` (default `1.31.0`). PyPI builds from 1.27 on target CUDA 13, matching this stack; 1.26 and older target CUDA 12 and would silently run ReActor on the CPU here. The CPU-only `onnxruntime` wheel is removed if present (it shadows the GPU one). The version is added to the pip constraints. Setup then opens a real session on the face detector and warns if it does not run on `CUDAExecutionProvider`; the app also shows this per job.
+
+**`POST_PROCESSING_VRAM_MODE`** is the worker's default memory mode:
+
+| Value | Hardware target | SeedVR2 starting preset |
+|---|---|---|
+| `high_vram` (default when unset or blank) | 48 GB VRAM, 96 GB RAM recommended | `seedvr2_ema_7b_fp16`, temporal batch 9, no VAE tiling, model kept on the GPU, decoded frames bounded at 48 GB |
+| `low_vram` | 16 GB VRAM / 64 GB RAM | `seedvr2_ema_3b_fp8_e4m3fn`, temporal batch 5, VAE tiling (512 px tiles), model offloaded to RAM between phases, decoded frames bounded at 24 GB |
+
+- The value is trimmed and case-insensitive. Anything else stops setup with an error naming the variable; the node refuses Worker-default jobs with the same message if the process was started some other way.
+- A clip's explicit **Low VRAM** or **High VRAM** setting overrides the worker default. **Worker default** reads it from the worker (`GET /martini/postprocess/info`) when the clip is queued. The job records the requested and resolved mode, and the resolved mode is part of the cache key. If the variable changes between queueing and running, the node refuses the job instead of using the other preset.
+- The mode is independent of where the job runs: either mode can run locally or on a pod with suitable hardware. Presets are starting points to measure; they are not GPU detection or a promise that a clip fits.
+
+**`POST_PROCESSING_MODELS`**: `mode` (default, the worker default's SeedVR2 model), `all` (both modes, so clips can override either way), `low_vram`, `high_vram`, `face` (face models only), `none`. The app refuses a job whose models the worker lacks and says which ones.
+
+| Model | Folder | Size | Used by |
+|---|---|---|---|
+| `inswapper_128.onnx` | `insightface` | 554 MB | Replace |
+| `buffalo_l.zip` → `buffalo_l/` | `insightface/models` | 289 MB | face detection (ReActor, face report) |
+| `codeformer-v0.1.0.pth` | `facerestore_models` | 377 MB | Restore; Replace with restoration |
+| `detection_Resnet50_Final.pth`, `parsing_parsenet.pth` | `facedetection` | 195 MB | CodeFormer face alignment and parsing |
+| `hand_yolov8s.pt` | `ultralytics/bbox` | 23 MB | face report: hands over faces |
+| `ema_vae_fp16.safetensors` | `SEEDVR2` | 0.5 GB | SeedVR2, both modes |
+| `seedvr2_ema_3b_fp8_e4m3fn.safetensors` | `SEEDVR2` | 3.4 GB | Low VRAM |
+| `seedvr2_ema_7b_fp16.safetensors` | `SEEDVR2` | 16.5 GB | High VRAM |
+
+Downloads resume from `.part` files and are checked against the published size **and sha256** (the SeedVR2 hashes match SeedVR2's own registry). A file that passed is marked `<file>.sha256-ok` with its size and modified time, so later starts do not re-hash 16 GB. A file with the right size but wrong hash is downloaded again.
+
+**Licenses.** Node-code licenses and pretrained-model licenses are separate; check both before commercial use.
+
+| Component | Code license | Model / weights license |
+|---|---|---|
+| ReActor (Codeberg checkout) | AGPL-3.0 (the repo's `LICENSE`; the GitHub mirror reports GPL-3.0) | — |
+| `inswapper_128.onnx`, `buffalo_l` (InsightFace) | InsightFace code MIT | **Non-commercial research use only** (InsightFace model policy). Redistributed through the `Gourieff/ReActor` HF dataset, whose MIT card does not change that |
+| CodeFormer (`codeformer-v0.1.0.pth`, `parsing_parsenet.pth`) | S-Lab License 1.0 (non-commercial) | S-Lab License 1.0 (non-commercial) |
+| RetinaFace `detection_Resnet50_Final.pth` (facexlib) | MIT | MIT (biubug6/Pytorch_Retinaface) |
+| SeedVR2 ComfyUI nodes | Apache-2.0 | SeedVR2 weights Apache-2.0 (ByteDance-Seed; `numz/SeedVR2_comfyUI` repackaging Apache-2.0) |
+| `hand_yolov8s.pt` (Bingsu/adetailer) | Ultralytics library AGPL-3.0 | Apache-2.0 model card; trained with Ultralytics YOLOv8 |
+| onnxruntime-gpu | MIT | — |
+
 ### Setup and startup
 
 | Variable | Default | What it does |
@@ -163,6 +209,12 @@ The script checks every download against its known size, so a partial file is re
 | `SKIP_MODELS` | `0` | `1` skips all model downloads |
 | `SKIP_START` | `0` | `1` sets everything up without starting ComfyUI |
 | `RUNPOD_SERVICES` | `1` | also runs the image's `/start.sh` (SSH, Jupyter) |
+| `POST_PROCESSING` | `1` | `0` skips ReActor, SeedVR2, onnxruntime-gpu and their models |
+| `POST_PROCESSING_VRAM_MODE` | unset = `high_vram` | `low_vram` or `high_vram`; anything else stops setup (see Post-processing) |
+| `POST_PROCESSING_MODELS` | `mode` | `all`, `low_vram`, `high_vram`, `face`, `none` |
+| `REACTOR_REPO` / `REACTOR_REF` | Codeberg / `2add113…` | ReActor source and pinned commit |
+| `SEEDVR2_REPO` / `SEEDVR2_REF` | numz / `4490bd1…` (v2.5.24) | SeedVR2 source and pinned commit |
+| `ONNXRUNTIME_GPU_VERSION` | `1.31.0` | must be a CUDA 13 build (1.27 or newer) for the default stack |
 
 ## Troubleshooting
 

@@ -14,6 +14,8 @@ import type {
   RerenderRequest as SharedRerenderRequest, RerenderResult as SharedRerenderResult, FinalState as SharedFinalState,
   ClipRevisionRequest as SharedClipRevisionRequest, LivePreviewFrame as SharedLivePreviewFrame, SectionActionImpact as SharedSectionActionImpact,
   SongTimeline as SharedSongTimeline, SongTimelineSection as SharedSongTimelineSection, SongTimelineShot as SharedSongTimelineShot, TimelineScene as SharedTimelineScene,
+  PostProcessOverview as SharedPostProcessOverview, PostClip as SharedPostClip, PostSettings as SharedPostSettings, PostAttempt as SharedPostAttempt,
+  PostWorkerInfo as SharedPostWorkerInfo, PostSettingsRequest as SharedPostSettingsRequest, PostSelectRequest as SharedPostSelectRequest,
   TimelineDraft as SharedTimelineDraft, TimelineSaveImpact as SharedTimelineSaveImpact, TimelineTransition as SharedTimelineTransition,
 } from "../electron/contracts";
 
@@ -82,6 +84,11 @@ declare global {
   type RerenderRequest = SharedRerenderRequest;
   type RerenderResult = SharedRerenderResult;
   type FinalState = SharedFinalState;
+  type PostProcessOverview = SharedPostProcessOverview;
+  type PostClip = SharedPostClip;
+  type PostSettings = SharedPostSettings;
+  type PostAttempt = SharedPostAttempt;
+  type PostWorkerInfo = SharedPostWorkerInfo;
 
   interface Window {
     martini: {
@@ -160,6 +167,15 @@ declare global {
         copyReport(projectId: string, finalId: string | null): Promise<void>;
         exportReport(projectId: string, finalId: string | null): Promise<string>;
         rerender(projectId: string, request: RerenderRequest): Promise<RerenderResult>;
+        onChanged(listener: (projectId: string) => void): () => void;
+      };
+      post: {
+        overview(projectId: string): Promise<PostProcessOverview>;
+        saveSettings(projectId: string, request: SharedPostSettingsRequest): Promise<PostProcessOverview>;
+        select(projectId: string, request: SharedPostSelectRequest): Promise<PostProcessOverview>;
+        process(projectId: string, clips: number[] | "pending"): Promise<PostProcessOverview>;
+        cancel(projectId: string): Promise<PostProcessOverview>;
+        workerInfo(): Promise<PostWorkerInfo>;
         onChanged(listener: (projectId: string) => void): () => void;
       };
       directorLlmOptions(): Promise<{ options: string[]; selected: string | null; error: string | null }>;

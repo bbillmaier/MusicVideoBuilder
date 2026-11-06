@@ -4,13 +4,14 @@ import { LocationsView } from "./LocationsView";
 import { PlanView } from "./PlanView";
 import { ProduceView } from "./ProduceView";
 import { ProjectStatus, ProjectsView, readableError } from "./ProjectsView";
+import { PostProcessView } from "./PostProcessView";
 import { ResultsView } from "./ResultsView";
 import { Button, Icon, IconButton, LoadingPage, Notice, PageHeader, PathField, Pill, Switch, cx, type LucideIcon } from "./ui";
 
-type View = "Projects" | "Direction" | "Plan" | "Locations" | "Produce" | "Results" | "Settings";
+type View = "Projects" | "Direction" | "Plan" | "Locations" | "Produce" | "PostProcessing" | "Results" | "Settings";
 const views: { view: View; icon: LucideIcon }[] = [
   { view: "Projects", icon: Icon.projects }, { view: "Direction", icon: Icon.direction }, { view: "Plan", icon: Icon.plan },
-  { view: "Locations", icon: Icon.locations }, { view: "Produce", icon: Icon.produce }, { view: "Results", icon: Icon.results },
+  { view: "Locations", icon: Icon.locations }, { view: "Produce", icon: Icon.produce }, { view: "PostProcessing", icon: Icon.postprocess }, { view: "Results", icon: Icon.results },
 ];
 
 export function App() {
@@ -67,7 +68,7 @@ export function App() {
       <aside className="sidebar">
         <nav className="nav" aria-label="Main">
           {views.map(({ view: item, icon: Glyph }) => <button key={item} className="nav-item" aria-current={view === item ? "page" : undefined} onClick={() => setView(item)}>
-            <Glyph size={19} aria-hidden />{item}
+            <Glyph size={19} aria-hidden />{item === "PostProcessing" ? "Post-processing" : item}
           </button>)}
           <span className="nav-sep" aria-hidden />
           <button className="nav-item" aria-current={view === "Settings" ? "page" : undefined} onClick={() => setView("Settings")}><Icon.settings size={19} aria-hidden />Settings</button>
@@ -101,6 +102,7 @@ function ViewContent({ view, database, comfy, checking, overview, loadError, onP
   if (view === "Plan") return <PlanView project={active} comfy={comfy} onNavigate={onNavigate} />;
   if (view === "Locations") return <LocationsView project={active} comfy={comfy} onNavigate={onNavigate} />;
   if (view === "Produce") return <ProduceView project={active} comfy={comfy} onNavigate={onNavigate} />;
+  if (view === "PostProcessing") return <PostProcessView project={active} comfy={comfy} onNavigate={onNavigate} />;
   if (view === "Results") return <ResultsView project={active} comfy={comfy} onNavigate={onNavigate} />;
   return <Settings database={database} comfy={comfy} checking={checking} onRecheck={onRecheck} onOpenComfy={onOpenComfy} />;
 }

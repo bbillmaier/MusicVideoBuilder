@@ -388,7 +388,7 @@ export function retryComfySync(projectId: unknown): ProjectDetail {
 /** Why this project cannot be deleted right now, or null. Work that is still writing into the folder must finish first. */
 export function projectDeleteBlocker(id: string): string | null {
   const busy = productionBusy();
-  if (busy?.projectId === id) return `This project is ${busy.kind === "render" ? "rendering clips" : busy.kind === "package" ? "writing a prompt package" : "stitching the final video"}. Stop it or wait for it to finish, then delete it.`;
+  if (busy?.projectId === id) return `This project is ${busy.kind === "render" ? "rendering clips" : busy.kind === "package" ? "writing a prompt package" : busy.kind === "postprocess" ? "post-processing clips" : "stitching the final video"}. Stop it or wait for it to finish, then delete it.`;
   if (timelineApplying.has(id)) return "The song timeline is being applied to the plan. Wait for it to finish, then delete the project.";
   if (syncState.has(id)) return "The project is being saved through ComfyUI. Wait for it to finish, then delete it.";
   const run = db().prepare("SELECT stage FROM director_runs WHERE project_id = ? AND status IN ('queued', 'running') LIMIT 1").get(id) as { stage: string } | undefined;

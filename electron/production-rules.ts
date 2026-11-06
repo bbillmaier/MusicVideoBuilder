@@ -144,12 +144,22 @@ export function parsePackageReport(report: string): PackageReport {
 export function actionValidation(notes: string[]): DecisionRow {
   const failed = notes.filter((note) => note.startsWith("WARNING: action validation could not repair"));
   if (failed.length) return { label: "Action validation", value: `Could not repair: ${failed.map((note) => note.replace(/^WARNING: action validation could not repair: /, "")).join("; ")}`, tone: "warn", at: null };
+  const unverified = notes.find((note) => note.startsWith("NOTE: action validation unverified"));
+  const unknownText = unverified ? unverified.replace(/^NOTE: action validation unverified: /, "").replace(/\.$/, "") : "";
   const repaired = notes.filter((note) => note.startsWith("NOTE: repaired action validation"));
-  if (repaired.length) return { label: "Action validation", value: `Repaired: ${repaired.map((note) => note.replace(/^NOTE: repaired action validation: /, "")).join("; ")}`, tone: "ok", at: null };
+  if (repaired.length) {
+    const fixed = repaired.map((note) => note.replace(/^NOTE: repaired action validation: /, "")).join("; ");
+    return { label: "Action validation", value: `Repaired: ${fixed}${unknownText ? ` · still unverified: ${unknownText}` : ""}`, tone: unknownText ? "info" : "ok", at: null };
+  }
   const skipped = notes.find((note) => note.startsWith("NOTE: action validation skipped"));
   if (skipped) return { label: "Action validation", value: "Skipped — the LLM returned no requirements receipt", tone: "warn", at: null };
+  // Unknown or placeholder receipts are neither conflicts nor valid: they are reported on their own.
+  if (unverified) return { label: "Action validation", value: `Unverified — ${unknownText}`, tone: "info", at: null };
+  const validated = notes.find((note) => note.startsWith("NOTE: action validation validated"));
+  if (validated) return { label: "Action validation", value: `Valid — ${validated.replace(/^NOTE: action validation validated: /, "").replace(/\.$/, "")}`, tone: "ok", at: null };
+  // Packages written before receipts were screened for template text ("needs=Supported") said "checked" for any receipt.
   const checked = notes.find((note) => note.startsWith("NOTE: action validation checked"));
-  if (checked) return { label: "Action validation", value: `Valid — ${checked.replace(/^NOTE: action validation checked /, "").replace(/\.$/, "")}`, tone: "ok", at: null };
+  if (checked) return { label: "Action validation", value: `Checked (older package; not screened for placeholder receipts) — ${checked.replace(/^NOTE: action validation checked /, "").replace(/\.$/, "")}`, tone: "none", at: null };
   return { label: "Action validation", value: "No result in the prompt-package report", tone: "none", at: null };
 }
 

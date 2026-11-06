@@ -1,0 +1,16 @@
+{
+  "name": "06b-stitch-selected.json",
+  "stage": "stitch",
+  "description": "Joins one selected video per clip of the saved render package (the original render, or a post-processed version the user selected or that is current and needs no review) with the original song (Martini Shot Finalize Selected Clips). Uniform clips are joined without re-encoding; mixed sizes are all normalized to the largest size first. Frame counts and frame rates are preserved and checked. Never overwrites an earlier final video. Used instead of 06 only when at least one clip resolves to a post-processed artifact.",
+  "prompt": {
+    "open": { "class_type": "MartiniShotOpenProject", "inputs": { "project_name": "{{project_name}}" } },
+    "status": { "class_type": "MartiniShotProjectStatus", "inputs": { "project": ["open", 0] } },
+    "status_json": { "class_type": "PreviewAny", "inputs": { "source": ["status", 0] } },
+    "finalize": {
+      "class_type": "MartiniShotFinalizeSelectedVideo",
+      "inputs": { "render_package": { "__value__": "{{render_package}}" }, "clip_selection": "{{clip_selection}}", "output_name": "final", "overwrite": false }
+    },
+    "video_path": { "class_type": "PreviewAny", "inputs": { "source": ["finalize", 0] } },
+    "stitch_report": { "class_type": "PreviewAny", "inputs": { "source": ["finalize", 1] } }
+  }
+}

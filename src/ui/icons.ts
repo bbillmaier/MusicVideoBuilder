@@ -6,12 +6,12 @@ import {
   ArrowRight, AudioWaveform, Ban, Camera, Check, ChevronDown, ChevronRight, CircleCheck, CircleDashed, CircleX, Clapperboard, Clock, CloudLightning, Copy, Cpu,
   Database, Ellipsis, ExternalLink, FileImage, FileText, Film, Folder, FolderOpen, Hourglass, ImageOff, ImagePlus, Images, Info, Layers,
   Link2, ListTree, LoaderCircle, MapPin, Minus, Monitor, Music, Orbit, Palette, Pause, Pencil, Play, Plus, Redo2, RefreshCw, Replace, RotateCcw, Save, Scissors, Settings,
-  Shirt, Shuffle, SkipBack, SlidersHorizontal, Square, Terminal, Timer, Trash2, TriangleAlert, User, X, Zap, ZoomIn, ZoomOut, type LucideIcon,
+  Shirt, Shuffle, Sparkles, SkipBack, SlidersHorizontal, Square, Terminal, Timer, Trash2, TriangleAlert, User, X, Zap, ZoomIn, ZoomOut, type LucideIcon,
 } from "lucide-react";
 
 export const Icon = {
   // Navigation
-  projects: Folder, direction: SlidersHorizontal, plan: Clapperboard, locations: MapPin, produce: Play, results: Images, settings: Settings,
+  projects: Folder, direction: SlidersHorizontal, plan: Clapperboard, locations: MapPin, produce: Play, postprocess: Sparkles, results: Images, settings: Settings,
   // Actions
   add: Plus, save: Save, openFolder: FolderOpen, folder: Folder, copy: Copy, refresh: RefreshCw, check: Check, render: Play, pause: Pause,
   stop: Square, retry: RotateCcw, reroll: Shuffle, external: ExternalLink, next: ArrowRight, remove: Trash2, replace: Replace, more: Ellipsis,

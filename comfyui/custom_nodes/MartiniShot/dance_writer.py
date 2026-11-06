@@ -310,9 +310,18 @@ def build_continuation(
     return "\n\n".join(lines)
 
 
-def lookahead_instruction(clip_seconds: float, next_energy: str) -> str:
-    """Asks for one paragraph past the clip end; code cuts it, so the clip never winds down."""
+def lookahead_instruction(clip_seconds: float, next_energy: str, end_state: str = "") -> str:
+    """Asks for one paragraph past the clip end; code cuts it, so the clip never winds down.
+
+    end_state: a planned destination for this clip (the END line). The clip then reaches it by the cut, and the extra
+    paragraph carries on from that state instead of contradicting it."""
     stamp = format_timestamp(clip_seconds)
+    if end_state:
+        return (
+            f"The video cuts at {stamp}. Reach the END state ({end_state}) by {stamp}, without rushing earlier phrases. "
+            f"Then write ONE extra final paragraph for the next few seconds after the cut ({next_energy} song-relative "
+            f"loudness), beginning exactly with \"At {stamp}, \", that continues naturally from that state."
+        )
     return (
         f"The routine keeps going after this clip: the video simply cuts mid-phrase at {stamp}. Write ONE extra "
         f"final paragraph for the next few seconds after the cut ({next_energy} song-relative loudness), beginning exactly with "

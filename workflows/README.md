@@ -45,7 +45,9 @@ Cache behavior comes from the nodes. Plan Story caches each LLM call on disk (`u
 
 Plan Story also writes `director_context.json`. This compact, versioned context packet holds the creative contract, one deterministic allocation for a required one-off event, and every section's entering state, required change, exit state, anchor, and anti-reset rule. It is an audit artifact, not an extra LLM call.
 
-The surreal motif weight is not a Plan Story input. It is saved with the Direction and used later by Write Prompt Package (`recurring_style_motif_weight`).
+The creative contract separates the user's facts from interpretation: `LOOK`, `MOTIF`, `MOTIF_ROLE` (how the motif relates to the performer), `EVENT`, and `CONCEPT` (montage, narrative, or mixture). A vibe is never an event: when the proposed event is not explicitly requested in the brief, it is dropped and recorded in `director_context.json` as a planning issue. A musical role written as a scene type (`scene: Chorus`) gets one focused `scene repair` call; anything still invalid is listed as a planning issue and the rules choose that section's scene type.
+
+The recurring motif frequency and the surreal imagery switch are not Plan Story inputs. They are saved with the Direction and used later by Write Prompt Package (`recurring_style_motif_weight`, `surreal_motifs`).
 
 ## 02a-analyze-song.json
 
@@ -117,11 +119,14 @@ Graph: `MartiniShotOpenProject` → `MartiniShotLoadStoryPlan` → `MartiniShotR
 | `{{seed}}` | the plan's seed from `story_plan.json` (Build Production Plan and Write Prompt Package both use it, so the production plan is deterministic for a given story) |
 | `{{director_llm}}` | the same Prompt LLM Loader option the planner uses |
 | `{{render_name}}` | `render-01`. The Director writes `martini_shot/<slug>/render-01`; when that folder already has files it writes `render-01_2`, `_3`, … and `render_package.json` points at the new folder |
-| `{{motif_weight}}` | Direction's surreal motif weight (`recurring_style_motif_weight`) |
+| `{{motif_weight}}` | Direction's recurring motif frequency (`recurring_style_motif_weight`): how often a recurring motif is offered; it never asks for surreal imagery by itself |
+| `{{surreal_motifs}}` | Direction's Surreal imagery switch. Off: motifs and hooks stay physically plausible and the user's own motif is the one that recurs. New projects default to off; a Direction saved before the switch existed reads as on when its motif weight was above 0 (that slider was then labeled surreal) |
 
 Fixed values are the node defaults, which match the user's Auto Director workflow (`K-Pop`, 8 s target shots, `continue_bias` 0.5, `max_clip_frames` 260, `continuation_overlap` 22, …). `subject_description` is `the performer` and `pronoun` is `she / her` (node defaults; no per-project setting exists yet). `validate_actions` is on, so every clip's prompt gets an action-validation note in the report.
 
-Before the per-clip prompt calls, the production plan projects this context into a short card for every shot: `MUST`, entering/exiting state, `MAY ADD IF COMPATIBLE`, and `MUST NOT`. A required event is assigned to one deterministic usable shot, rather than left to the optional section-hook pass. The package folder retains a final `director_context.json`, including the polished shot cards, camera/style decisions, and event allocation used for that package.
+The production plan attaches the section context to every shot as structured fields. The clip writer then resolves it per generated clip, after long shots are split into renderable clips (`clip_instructions.py`): a section's entering state applies only to its first story clip after a hard cut, its destination only to the last clip of its last story shot, and every other clip continues the activity (Continue and New angle start from the previous clip's ending). Each clip gets one `CLIP CARD` (type, duration, music, descriptive location with image evidence, start, activity, end, required event, camera, optional hook/motif, fixed visual style, preserve, avoid). Dance keeps its full choreography rules and word minimum. A required event is assigned to one deterministic usable shot, rather than left to the optional section-hook pass. The package folder retains a final `director_context.json`, including the shot audit cards, hooks, motifs, camera/style decisions, event allocation, and `required_event_report` (allocated clips, which clips' prompt text names the event, and visual fulfillment always `unverified`).
+
+Action validation reports each clip as validated, unverified (a placeholder receipt such as `needs=Supported`, or evidence it could not confirm), repaired, or unresolved. It also checks posture/position at Continue and New angle joins, explicit resets, a Freeform action that stops before its planned destination, and malformed responses (an echoed `REVISION REQUEST:`, a template ending state, a truncated action). At most one repair call is made per clip. Repetition is never a failure.
 
 Build Production Plan raises "Cannot build production plan until requested performer location images are present" when the resolver still lists missing images, so a dead `<Picture>` reference can never be written. The app also refuses to start unless Locations shows every requested image as confirmed for the current plan, and unless the plan is fresh.
 
@@ -198,3 +203,26 @@ gets a fresh LLM answer.
 ## Validating templates against the installed ComfyUI
 
 With ComfyUI running, `npm run validate:workflows` reads `/object_info` and checks every template: node classes loaded, input names, combo values (model files, modes), and link output indexes. It never queues a prompt.
+
+## 06b-stitch-selected.json
+
+The final stitch used **instead of 06** when at least one clip resolves to a post-processed artifact (Post-processing page). `MartiniShotOpenProject` → `MartiniShotProjectStatus`, and `MartiniShotFinalizeSelectedVideo` on the render package, plus `PreviewAny` on `video_path` and `stitch_report` (the same output names as 06, so the app records the video the same way).
+
+| Placeholder | Supplied by Electron |
+|---|---|
+| `{{project_name}}`, `{{render_package}}` | as in 06 (the remote mirror's folder on a remote worker) |
+| `{{clip_selection}}` | JSON list `[{index, path}]`, one entry per segment in `segments.json`; `path` is relative to the package folder: the original render or `postprocess/clip_NNN/<attempt>.mp4` |
+
+The node refuses a selection that misses, repeats, or adds clips, or a path that leaves the package folder. Clips of identical size, codec and pixel format are concatenated without re-encoding. Otherwise every clip is re-encoded to the largest clip's size (Lanczos, H.264 CRF 16, frame rate passed through) and each normalized clip's frame count is checked. Different frame rates or aspect ratios are refused, because re-timing or cropping would break music sync or framing. The song is laid underneath as in 06, and the result's frame count must equal the sum of the selected clips. When every clip resolves to its original, the app keeps using 06 unchanged.
+
+## 07-postprocess-clip.json
+
+One clip's post-processing. The app (`electron/postprocess-workflow.ts`) assembles the graph from the base `prompt` and the `repeat` fragments:
+
+- base: `MartiniShotPostProcessLoad` (unloads other models, checks the source/reference sha256 and the worker's memory mode, bounds decoded-frame RAM, decodes into one float batch) → `MartiniShotSavePostProcessed` (streams frames to ffmpeg, copies the source audio, refuses any change of frame count, frame rate or aspect ratio, writes atomically into a `postprocess/` folder plus a `.json` sidecar, never overwrites).
+- `restore`: `ReActorRestoreFace` (CodeFormer) for **Restore**.
+- `replace`: `ReActorOptions` → `ReActorFaceSwapOpt` (inswapper, with its built-in CodeFormer when restoration is on) for **Replace**. Restoration is never run twice.
+- `face_report`: `MartiniShotFaceReport` (per-frame faces, changes, hands over faces) → `ReActorUnload`, for Restore and Replace.
+- `upscale`: `SeedVR2LoadDiTModel` + `SeedVR2LoadVAEModel` → `SeedVR2VideoUpscaler`, after face treatment.
+
+Every value is filled from the effective settings (the memory preset plus advanced overrides). Before submitting, the app checks the assembled prompt against the worker's `/object_info` (node classes, input names, required inputs, links, combo values such as model files and devices, and numeric ranges), so a mismatched node version fails before anything runs. `MartiniShotPostProcessLoad.job_json` carries the attempt id, cache key, hashes, and requested/resolved memory mode; the save node echoes them in its metadata, and the app checks them together with the returned file's size and sha256.

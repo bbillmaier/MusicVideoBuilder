@@ -1,0 +1,55 @@
+/* Post-processing view. Uses tokens.css and the shared components in styles.css (and .control/.toggle-row from plan.css). */
+.post-grid { display: grid; grid-template-columns: minmax(280px, 0.8fr) minmax(0, 2fr); gap: var(--space-4); align-items: start; }
+.post-list { padding: var(--space-3); position: sticky; top: 0; max-height: calc(100vh - var(--titlebar-h) - 40px); overflow: auto; }
+.post-check-all { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.post-clips { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.post-clip { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px; }
+.post-clip.is-off { opacity: 0.6; }
+.post-clip-main { display: grid; grid-template-columns: 72px minmax(0, 1fr) auto; align-items: center; gap: 10px; width: 100%; padding: 6px; text-align: left;
+  color: inherit; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; transition: border-color var(--dur-fast) var(--ease); }
+.post-clip-main:hover { border-color: var(--border-strong); }
+.post-clip-main:focus-visible { box-shadow: var(--focus-ring); }
+.post-clip.is-current .post-clip-main { border-color: var(--pink-border); background: var(--pink-soft); }
+.post-clip-main video, .post-thumb-empty { width: 72px; aspect-ratio: 4 / 3; object-fit: cover; border-radius: var(--radius-sm); background: #000; pointer-events: none; }
+.post-thumb-empty { display: grid; place-items: center; color: var(--text-faint); }
+.post-clip-text { display: grid; gap: 2px; min-width: 0; }
+.post-clip-text > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.post-detail { display: grid; gap: var(--space-3); }
+.post-compare { display: grid; gap: var(--space-2); }
+.post-videos { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); }
+.post-videos figure { margin: 0; display: grid; gap: 4px; }
+.post-videos figcaption { color: var(--text-muted); font-size: var(--text-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.post-frame { position: relative; overflow: hidden; aspect-ratio: 4 / 3; background: #000; border: 1px solid var(--border-strong); border-radius: var(--radius); cursor: zoom-in; }
+.post-frame video { width: 100%; height: 100%; object-fit: contain; transition: transform var(--dur) var(--ease); }
+.post-frame-empty { display: grid; place-items: center; cursor: default; border-style: dashed; }
+.post-transport { display: grid; grid-template-columns: auto auto auto minmax(0, 1fr) 64px auto; align-items: center; gap: var(--space-2); }
+
+.post-resolution { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 10px; align-items: start; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-inset); font-size: var(--text-sm); }
+.post-resolution .row-actions { grid-column: 2; }
+.post-resolution.unresolved { border-color: var(--warn-border); background: var(--warn-soft); }
+.post-resolution.processed { border-color: var(--ok-border); }
+.post-resolution.bypass { border-color: var(--blue-border); }
+
+.post-settings { display: grid; gap: var(--space-3); }
+.post-suggest { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--text-2); }
+.post-modes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-2); margin: 0; padding: 0; border: 0; }
+.post-modes legend { margin-bottom: 6px; color: var(--text-2); font-weight: var(--weight-medium); }
+.post-mode { display: grid; gap: 4px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2); cursor: pointer; }
+.post-mode input { position: absolute; opacity: 0; pointer-events: none; }
+.post-mode:focus-within { box-shadow: var(--focus-ring); }
+.post-mode.is-on { border-color: var(--pink-border); background: var(--pink-soft); }
+.post-ref { display: flex; align-items: center; gap: 10px; }
+.post-ref img { width: 44px; height: 44px; object-fit: cover; border-radius: var(--radius-sm); border: 1px solid var(--border); }
+.post-actions { padding-top: var(--space-2); border-top: 1px solid var(--border-subtle); }
+
+.post-attempts { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-3); }
+.post-attempts > li { display: grid; gap: 4px; padding-bottom: var(--space-3); border-bottom: 1px solid var(--border-subtle); }
+.post-attempt-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.post-face-report { display: grid; gap: 2px; padding: 8px 10px; border-radius: var(--radius-sm); background: var(--surface-inset); color: var(--text-2); }
+
+@media (max-width: 1280px) {
+  .post-grid { grid-template-columns: minmax(0, 1fr); }
+  .post-list { position: static; max-height: 320px; }
+  .post-modes { grid-template-columns: minmax(0, 1fr); }
+}

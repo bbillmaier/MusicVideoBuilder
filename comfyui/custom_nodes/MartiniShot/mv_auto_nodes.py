@@ -140,7 +140,7 @@ from .mv_story import (CAMERA_SYSTEM, CREATIVE_BRIEF_SYSTEM, DETAIL_SYSTEM, LOCA
                        build_camera_message, build_detail_message, build_location_message, build_motif_message,
                        build_creative_brief_message, build_story_message, build_style_message, build_location_quota_message,
                        creative_direction_text, parse_creative_brief, parse_details, parse_location_quota, parse_locations,
-                       parse_numbered, parse_story, parse_style, parse_style_motifs)
+                       parse_numbered, parse_story, parse_style, parse_style_motifs, repair_story_scenes)
 from .mv_nodes import MV_CATEGORY, _to_tensor
 from .mv_plan import FPS, draw_timeline, format_time
 from .ref2va_nodes import multiline
@@ -301,6 +301,11 @@ class MiniMaxH3AutoDirector:
                     "tooltip": "EXPERIMENTAL: chance each planned shot receives a surreal recurring style motif. "
                     "0 = grounded style only; 1 = every shot. Seeded and reported.",
                 }),
+                "surreal_motifs": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "With recurring_style_motif_weight above 0: on = surreal recurring motifs (the original "
+                    "behavior); off = grounded, physically plausible recurring motifs.",
+                }),
                 "story_wheel": ("BOOLEAN", {
                     "default": False,
                     "tooltip": "EXPERIMENTAL: create a connected section arc with visible turns and end states; continued clips stay coherent.",
@@ -347,7 +352,7 @@ class MiniMaxH3AutoDirector:
              style_bible=True, camera_pass=True, section_motifs=True, broll_invented_chance=0.0,
               candidate_selection=False, match_invented_location_style=False, recurring_style_motif_weight=0.0,
                story_wheel=False, propose_story_locations=False, min_locations=0, reset_plan_cache=False,
-               request_performer_location_images=False, creative_brief=""):
+               request_performer_location_images=False, creative_brief="", surreal_motifs=True):
         waveform = audio["waveform"][0].float().cpu().numpy()
         sample_rate = int(audio["sample_rate"])
         analysis = analyze_song(waveform, sample_rate)
@@ -491,7 +496,8 @@ class MiniMaxH3AutoDirector:
         lyric_text = " ".join(w["text"] for w in words) if words else " ".join(lyrics.split())
         polish_lines = self._polish(llm, shots, analysis, story_brief, dance_style, lyric_text, seed,
                                     style_bible, camera_pass, section_motifs, recurring_style_motif_weight,
-                                    cached if llm is not None else None, creative_direction)
+                                    cached if llm is not None else None, creative_direction, bool(surreal_motifs),
+                                    creative_contract.get("motif", ""))
 
         duration = analysis["duration"]
         bars = []
@@ -547,8 +553,12 @@ class MiniMaxH3AutoDirector:
 
     @staticmethod
     def _polish(llm, shots, analysis, brief, dance_style, lyrics, seed, style_on, camera_on, motifs_on,
-                motif_weight=0.0, cached=None, creative_direction="") -> list[str]:
-        """Up to three LLM calls that add a global style, per-section hooks, and per-shot cameras to the shot dicts."""
+                motif_weight=0.0, cached=None, creative_direction="", surreal=False, user_motif="") -> list[str]:
+        """Up to three LLM calls that add a global style, per-section hooks, and per-shot cameras to the shot dicts.
+
+        Hooks and recurring motifs are stored as structured fields (_hook, _style_motif) that the clip card marks
+        optional. motif_weight is only how often a recurring motif is offered; surreal decides whether that motif may be
+        impossible imagery. With surreal off, the user's own motif (user_motif) is the recurring motif when there is one."""
         if not (style_on or camera_on or motifs_on):
             return []
         if llm is None:
@@ -557,10 +567,13 @@ class MiniMaxH3AutoDirector:
         places = list(dict.fromkeys(s["location_description"] for s in shots if s["location_description"]))
         style = ""
         if style_on:
-            message = build_style_message(brief, dance_style, lyrics, places, motif_weight, creative_direction)
+            message = build_style_message(brief, dance_style, lyrics, places, motif_weight, creative_direction,
+                                          surreal=surreal, user_motif=user_motif)
             response = cached("style bible", message, {}, 0.8, 300, seed + 21, STYLE_SYSTEM) if cached else \
                 run_llm(llm, message, {}, 0.8, 300, seed + 21, STYLE_SYSTEM)
             style, style_motifs = parse_style(response), parse_style_motifs(response)
+            if motif_weight > 0 and not surreal and _clean(user_motif):
+                style_motifs = _clean(user_motif)  # recur the user's motif; never ask for invented imagery
             for shot in shots:
                 shot["style_bible"] = style
             selected = []
@@ -568,10 +581,13 @@ class MiniMaxH3AutoDirector:
                 rng = random.Random(seed + 22)
                 for number, shot in enumerate(shots, start=1):
                     if rng.random() < motif_weight:
-                        shot["llm_notes"] += f" Optional surreal recurring motif for this shot: {style_motifs}."
+                        shot["_style_motif"] = style_motifs
                         selected.append(number)
-            lines.append(f"  style (recurring motif weight {motif_weight:.0%}; shots "
+            kind = "surreal" if surreal else "grounded"
+            lines.append(f"  style (recurring motif weight {motif_weight:.0%}, {kind} motifs; shots "
                          f"{', '.join(map(str, selected)) or 'none'}): {style or '(none returned)'}")
+            if selected:
+                lines.append(f"  recurring motif ({kind}): {style_motifs}")
         if motifs_on:
             rows = []
             for i, section in enumerate(analysis["sections"], start=1):
@@ -579,23 +595,27 @@ class MiniMaxH3AutoDirector:
                 rows.append(f"Section {i}: {format_time(section['start'])}-{format_time(section['end'])}, {section['role']}, "
                             f"energy {section['energy']:.2f}. Principal action: {shot.get('scene_description') or 'none'}. "
                             f"Intentional contrast: {shot.get('energy_contrast') or 'none'}.")
-            message = build_motif_message(rows, brief, dance_style, lyrics, creative_direction)
+            message = build_motif_message(rows, brief, dance_style, lyrics, creative_direction, surreal=surreal)
             response = cached("section motifs", message, {}, 0.9, 60 + 40 * len(rows), seed + 31, MOTIF_SYSTEM) if cached else \
                 run_llm(llm, message, {}, 0.9, 60 + 40 * len(rows), seed + 31, MOTIF_SYSTEM)
             hooks = parse_numbered(response, "SECTION", "HOOK", len(rows))
             for shot in shots:
                 if hooks.get(shot["_section"]):
-                    shot["llm_notes"] += (f" Optional visual hook for this part of the song: {hooks[shot['_section']]}. "
-                                          "Use it only if compatible with the principal action and location.")
+                    shot["_hook"] = hooks[shot["_section"]]
             lines += [f"  section {n} hook: {hooks.get(n, '(none)')}" for n in range(1, len(rows) + 1)]
-            event = ""
-            for line in creative_direction.splitlines():
-                if line.lower().startswith("required one-off event:"):
-                    event = line.split(":", 1)[1].strip()
-                    break
-            if event:
-                allocated = [str(number) for number, hook in hooks.items() if event.lower() in hook.lower()]
-                lines.append(f"  required event '{event}': section(s) {', '.join(allocated) if allocated else 'NOT ALLOCATED'}")
+        event = next((line.split(":", 1)[1].strip() for line in creative_direction.splitlines()
+                      if line.lower().startswith("required one-off event:")), "")
+        if event:
+            # The canonical allocation (director_context), not a search of optional hook text. Prompt coverage is
+            # checked after the clips are written; the rendered video is never claimed as verified.
+            allocated = [(number, item) for number, shot in enumerate(shots, start=1)
+                         for item in shot.get("_required_events", ())]
+            if allocated:
+                sections = sorted({int(item.get("section", 0)) for _, item in allocated})
+                lines.append(f"  required event '{event}': allocated to section {', '.join(map(str, sections))} "
+                             f"(shot {', '.join(str(number) for number, _ in allocated)})")
+            else:
+                lines.append(f"  required event '{event}': not allocated to any shot")
         if camera_on:
             rows = [f"Shot {i}: {s['start']}, {s['scene_type']}, {s['transition']}, {s['_role']}, "
                     f"at {s['location_description']}. Action: {s['scene_description'] or 'expressive dance'}. "
@@ -661,6 +681,14 @@ class MiniMaxH3AutoDirector:
                           max(900, 160 * len(sections) if story_wheel else 100 + 80 * len(sections)), seed, system) \
             if cached else run_llm(llm, message, {}, 0.7, max(900, 160 * len(sections) if story_wheel else 100 + 80 * len(sections)), seed, system)
         story, warnings = parse_story(response, len(sections), [r["name"] for r in refs if r["kind"] == "Location"])
+        # A musical role written as the scene type ("scene: Chorus") gets one focused repair; anything still invalid
+        # stays visible as a planning issue and the production rules choose that section's scene type.
+        warnings += repair_story_scenes(
+            story, sections,
+            (lambda repair, repair_system, temperature, tokens:
+             cached("scene repair", repair, {}, temperature, tokens, seed + 67, repair_system) if cached
+             else run_llm(llm, repair, {}, temperature, tokens, seed + 67, repair_system)),
+            bool(names("Subject")))
         def count_locations(value):
             return {(_clean(beat.get("location") or beat.get("new_location"))).lower() for beat in value.values()
                     if beat.get("scene") != "B-roll" and _clean(beat.get("location") or beat.get("new_location"))}

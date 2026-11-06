@@ -16,10 +16,10 @@ from .mv_auto import analyze_song, plan_auto_shots
 from .mv_auto_nodes import MiniMaxH3AutoDirector
 from .mv_nodes import MiniMaxH3MusicVideoDirector, MiniMaxH3MusicVideoPromptRevision, MiniMaxH3MusicVideoSegmentLoader
 from .mv_story import (CREATIVE_BRIEF_SYSTEM, STORY_SYSTEM, TIMELINE_SHOT_RULES, build_creative_brief_message, parse_story,
-                       prompt_text, timeline_shot_rows,
+                       prompt_text, repair_story_scenes, timeline_shot_rows,
                        creative_direction_text, parse_creative_brief)
 from .dance_nodes import run_llm
-from .director_context import attach_context_to_shots, build_director_context
+from .director_context import attach_context_to_shots, build_director_context, required_event_report
 from .video_nodes import LOADER_MODES, MiniMaxH3StitchSongSegments
 
 from .project_store import (find_requested_location, load_project, project_slug, read_state, requested_location_path,
@@ -275,8 +275,11 @@ class MartiniShotPlanStory:
         write_state(project, "director_context.json", state["director_context"])
         event_lines = [f"  {event['event']}: section {event['section']} (assigned deterministically)"
                        for event in state["director_context"].get("required_events", ())]
+        issue_lines = [f"  WARNING: {issue}" for issue in state["director_context"].get("planning_issues", ())
+                       if not issue.startswith("Section ")]  # section scene issues are already in the story warnings
         report = "\n".join([f"Martini Shot story plan: {len(analysis['sections'])} song sections."]
-                             + (["", "Creative direction:"] + [f"  {line}" for line in direction.splitlines()] if direction else [])
+                             + (["", "Creative direction:"] + [f"  {line}" for line in direction.splitlines()] + issue_lines
+                                if direction or issue_lines else [])
                               + (["", "Required event allocation:"] + event_lines if event_lines else [])
                              + (["", "Story:"] + story_lines if story_lines else [])
                              + (["", "Location observations:"] + evidence_lines if evidence_lines else [])
@@ -375,6 +378,12 @@ class MartiniShotApplyTimeline:
             allowed = self._places(project, story)
             parsed, parse_warnings = parse_story(response, len(sources),
                                                  [r["name"] for r in project["refs"] if r["kind"] == "Location"])
+            parsed = {number: beat for number, beat in parsed.items() if number in rewrite}
+            parse_warnings += repair_story_scenes(
+                parsed, analysis["sections"],
+                lambda repair, repair_system, temperature, tokens: _cached(
+                    lines, llm, "scene repair", repair, temperature, tokens, int(seed) + 98, repair_system),
+                any(r["kind"] == "Subject" for r in project["refs"]))
             for number in rewrite:
                 beat = parsed.get(number)
                 if not beat:
@@ -603,7 +612,12 @@ class MartiniShotWritePromptPackage:
                              "max_tokens": ("INT", {"default": 1200, "min": 128, "max": 8192}),
                              "max_clip_frames": ("INT", {"default": 260, "min": 124, "max": 362, "step": 17}),
                              "continuation_overlap": ("INT", {"default": 22, "min": 0, "max": 107}),
-                             "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFF})}}
+                             "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFF})},
+                "optional": {"surreal_motifs": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Off: recurring motifs stay physically plausible (the user's own motif is reused when there "
+                               "is one). On: recurring motifs and hooks may be surreal. recurring_style_motif_weight only "
+                               "sets how often a motif is offered."})}}
 
     RETURN_TYPES = ("MARTINI_RENDER_PACKAGE", "STRING", "STRING", "STRING")
     RETURN_NAMES = ("render_package", "all_prompts", "report", "folder")
@@ -612,13 +626,14 @@ class MartiniShotWritePromptPackage:
 
     def write(self, project, production_plan, llm, render_name, subject_description, pronoun, audio_usage, style_bible, camera_pass,
               section_motifs, lip_sync, recurring_style_motif_weight, validate_actions, temperature, max_tokens, max_clip_frames,
-              continuation_overlap, seed):
+              continuation_overlap, seed, surreal_motifs=False):
         shots = copy.deepcopy(production_plan["shots"])
+        contract = (production_plan.get("director_context") or {}).get("creative_contract") or {}
         polish = MiniMaxH3AutoDirector._polish(
             llm, shots, production_plan["analysis"], production_plan.get("story_brief", ""),
             production_plan.get("dance_style", "K-Pop"), "", int(seed),
             bool(style_bible), bool(camera_pass), bool(section_motifs), recurring_style_motif_weight, None,
-            production_plan.get("creative_direction", ""),
+            production_plan.get("creative_direction", ""), bool(surreal_motifs), contract.get("motif", ""),
         )
         folder_name = f"martini_shot/{project_slug(project['name'])}/{project_slug(render_name)}"
         result = MiniMaxH3MusicVideoDirector().direct(
@@ -638,10 +653,26 @@ class MartiniShotWritePromptPackage:
             "transition": shot.get("transition"), "camera": shot.get("camera_text") or shot.get("camera"),
             "style": shot.get("style_bible", ""), "context_card": shot.get("_director_context_card", ""),
             "required_events": shot.get("_required_events", []),
+            "hook": shot.get("_hook", ""), "recurring_motif": shot.get("_style_motif", ""),
+            "section_part": shot.get("_section_part", 0), "section_parts": shot.get("_section_parts", 0),
         } for index, shot in enumerate(shots, start=1)]
+        context["settings"] = {**context.get("settings", {}), "recurring_style_motif_weight": float(recurring_style_motif_weight),
+                               "surreal_motifs": bool(surreal_motifs)}
+        # Allocation is canonical; prompt coverage is a text check of the written clips; the rendered video is never
+        # claimed as verified. The app re-checks coverage against the current prompt files after revisions.
+        segments = json.loads(Path(folder, "segments.json").read_text(encoding="utf-8"))["segments"]
+        context["required_event_report"] = required_event_report(
+            context, context["production_shots"], segments,
+            lambda segment: Path(folder, segment["prompt_file"]).read_text(encoding="utf-8")
+            if Path(folder, segment["prompt_file"]).is_file() else "")
+        event_lines = [f"  required event '{item['event']}': prompt text "
+                       + (f"mentions it in clip {', '.join(map(str, item['prompt_mentions']))}" if item["prompt_mentions"]
+                          else f"does not name it in its allocated clip(s) {', '.join(map(str, item['clips'])) or '(none)'}")
+                       + "; rendered video not verified" for item in context["required_event_report"]]
         Path(folder, "director_context.json").write_text(json.dumps(context, indent=2), encoding="utf-8")
         package = {"project": project["name"], "folder": folder, "render_name": render_name}
         write_state(project, "render_package.json", package)
+        polish = polish + event_lines
         report = "\n".join(["Martini Shot prompt package written."] + (["Polish:"] + polish if polish else []) + ["", report])
         return package, prompts, report, folder
 

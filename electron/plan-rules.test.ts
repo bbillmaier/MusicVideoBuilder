@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import {
   DEFAULT_DIRECTION, PREFERRED_DIRECTOR_LLM, assetFingerprint, cacheEvidence, cachedNodes, chooseDirectorLlm, parseCreativeDirection, parseStoryPlan,
-  planFreshness, planInputs, planWorkflowValues, previewText, reportWarnings, storySignature, validateDirection, wheelPhaseFor, type RawStoryPlan,
+  planFreshness, planInputs, planWorkflowValues, previewText, reportWarnings, storySignature, surrealSetting, validateDirection, wheelPhaseFor, type RawStoryPlan,
 } from "./plan-rules";
 import { applyTemplateValues, type WorkflowTemplate } from "./workflow-template";
 
@@ -168,4 +168,29 @@ test("story_plan.json becomes the read-only plan model", () => {
 
   assert.notEqual(storySignature(plan), storySignature(parseStoryPlan({ ...rawPlan, story: { ...rawPlan.story as object, "1": { scene: "Dance", location: "neon street", beat: "Different." } } }, { projectPath, suppliedLocations: ["neon street"], report: "" })));
   assert.throws(() => parseStoryPlan({ analysis: { duration: 10, sections: [] } }, { projectPath, suppliedLocations: [], report: "" }), /no song sections/);
+});
+
+test("surreal imagery is its own setting; projects saved before it keep their surreal intent", () => {
+  assert.equal(DEFAULT_DIRECTION.surrealMotifs, false, "new projects default to grounded motifs");
+  assert.equal(validateDirection({ ...DEFAULT_DIRECTION, motifWeight: 0.5 }).surrealMotifs, false, "frequency alone never turns surreal on");
+  assert.equal(validateDirection({ ...DEFAULT_DIRECTION, surrealMotifs: true }).surrealMotifs, true);
+  assert.throws(() => validateDirection({ ...DEFAULT_DIRECTION, surrealMotifs: "yes" }), /surrealMotifs must be on or off/);
+  // a saved direction without the field: the old slider was labeled "Surreal recurring motif weight"
+  assert.equal(surrealSetting({ motifWeight: 0.5 }), true);
+  assert.equal(surrealSetting({ motifWeight: 0 }), false);
+  assert.equal(surrealSetting({ motifWeight: 0.5, surrealMotifs: false }), false);
+  // turning it on or off never makes the story plan out of date
+  const assets = "a";
+  const direction = { ...DEFAULT_DIRECTION, planSeed: 7 };
+  assert.deepEqual(planFreshness(planInputs(direction, PREFERRED_DIRECTOR_LLM, assets), planInputs({ ...direction, surrealMotifs: true }, PREFERRED_DIRECTOR_LLM, assets)), { state: "fresh", reasons: [] });
+});
+
+test("planning issues from director_context.json reach the plan model", () => {
+  const raw: RawStoryPlan = {
+    project: "p", analysis: { duration: 10, bpm: 120, sections: [{ start: 0, end: 10, role: "chorus", label: "A" }] },
+    story: { "1": { scene: "", beat: "runs", scene_source: "rules" } }, settings: {},
+    director_context: { planning_issues: ["Section 1: the planner wrote 'Chorus' (a musical role) as the scene type and the repair returned no valid type"] },
+  };
+  const plan = parseStoryPlan(raw, { projectPath: "C:\\p", suppliedLocations: [], report: "" });
+  assert.deepEqual(plan.planningIssues, ["Section 1: the planner wrote 'Chorus' (a musical role) as the scene type and the repair returned no valid type"]);
 });

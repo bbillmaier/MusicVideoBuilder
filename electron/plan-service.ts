@@ -58,6 +58,8 @@ function toDirection(row: DirectionRow): DirectionRecord {
   return {
     creativeBrief: row.creative_brief, storyWheel: Boolean(row.story_wheel), minLocations: row.min_locations,
     requestLocationImages: Boolean(row.request_location_images), motifWeight: row.motif_weight,
+    // Saved before the separate switch existed: the motif slider then asked for surreal imagery, so keep that intent.
+    surrealMotifs: saved.surrealMotifs ?? row.motif_weight > 0,
     danceStyle: saved.danceStyle ?? "K-Pop", targetShotSeconds: saved.targetShotSeconds ?? 8, minShotSeconds: saved.minShotSeconds ?? 3,
     maxShotSeconds: saved.maxShotSeconds ?? 10, cutRateVsEnergy: saved.cutRateVsEnergy ?? 0.5, brollAmount: saved.brollAmount ?? 0.3,
     performanceVsDance: saved.performanceVsDance ?? 0.4, freeformAmount: saved.freeformAmount ?? 0, locationVariety: saved.locationVariety ?? 0.5,
@@ -82,7 +84,7 @@ export function saveDirection(projectId: unknown, raw: unknown): Promise<PlanOve
     maxShotSeconds: direction.maxShotSeconds, cutRateVsEnergy: direction.cutRateVsEnergy, brollAmount: direction.brollAmount,
     performanceVsDance: direction.performanceVsDance, freeformAmount: direction.freeformAmount, locationVariety: direction.locationVariety,
     chorusConsistency: direction.chorusConsistency, outfitChangeRate: direction.outfitChangeRate, continueBias: direction.continueBias,
-    hardCutsChangeLocation: direction.hardCutsChangeLocation, lipSync: direction.lipSync,
+    hardCutsChangeLocation: direction.hardCutsChangeLocation, lipSync: direction.lipSync, surrealMotifs: direction.surrealMotifs,
     aspectRatio: direction.aspectRatio, renderMegapixels: direction.renderMegapixels, renderSteps: direction.renderSteps };
   db().prepare(`UPDATE project_direction SET creative_brief = ?, story_wheel = ?, min_locations = ?, request_location_images = ?, motif_weight = ?, production_settings = ?, updated_at = ?
     WHERE project_id = ?`).run(direction.creativeBrief, direction.storyWheel ? 1 : 0, direction.minLocations, direction.requestLocationImages ? 1 : 0,
@@ -142,6 +144,7 @@ export async function planOverview(projectId: unknown): Promise<PlanOverview> {
     blockers.push(production.kind === "render"
       ? "Clips are rendering from the current plan. Use Stop after current clip on Produce and let it finish before planning again."
       : production.kind === "stitch" ? "The final video is being stitched from the current plan. Wait for it to finish."
+        : production.kind === "postprocess" ? "Clips are being post-processed. Wait for the Post-processing queue to finish."
         : "A prompt package is being written from the current plan. Wait for it to finish.");
   }
   return {

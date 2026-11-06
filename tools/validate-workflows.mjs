@@ -51,7 +51,8 @@ for (const file of fs.readdirSync(dir).filter((name) => name.endsWith(".json")).
         if (!spec) { report(file, `${id} (${classType}): input "${key}" does not exist`); continue; }
         if (spec.dynamicChild) continue;
         if (Array.isArray(raw) && raw.length === 2 && typeof raw[0] === "string") {
-          const source = graph[raw[0]] ?? template.prompt[raw[0]];
+          // Fragments the app assembles (07) link to nodes defined in sibling fragments.
+          const source = graph[raw[0]] ?? template.prompt[raw[0]] ?? graphs.map((other) => other[raw[0]]).find(Boolean);
           if (!source) {
             if (!/{{/.test(raw[0])) report(file, `${id}.${key} links to missing node ${raw[0]}`);
             continue;

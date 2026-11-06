@@ -112,8 +112,8 @@ function DirectionEditor({ project, comfy, onNavigate }: { project: ProjectDetai
         <div className="control motif">
           <div className="motif-head">
             <div className="control-text">
-              <b id="motif-label">Surreal recurring motif weight</b>
-              <p id="motif-help">At <b>0</b> the director does not invent extra surreal motifs. Higher values allow occasional, surprising thematic cutaways. Motifs you write in your description are used whatever this is set to. It shapes the clip prompts written later, so changing it does not make the plan out of date.</p>
+              <b id="motif-label">Recurring motif frequency</b>
+              <p id="motif-help">How often a recurring motif is offered to a shot. If your description names a motif (for example police lights), that motif is the one that recurs. At <b>0</b> no extra motif is added, though a motif from your description can still appear. This alone never asks for surreal imagery. It shapes the clip prompts written later, so changing it does not make the plan out of date.</p>
             </div>
             <input className="input motif-number" type="number" min={0} max={1} step={0.05} value={draft.motifWeight} aria-labelledby="motif-label"
               onChange={(event) => { const value = Number(event.target.value); if (Number.isFinite(value)) change({ motifWeight: Math.min(1, Math.max(0, value)) }); }} />
@@ -122,6 +122,8 @@ function DirectionEditor({ project, comfy, onNavigate }: { project: ProjectDetai
             onChange={(event) => change({ motifWeight: Number(event.target.value) })} />
         </div>
 
+        <ToggleRow icon={Icon.motif} label="Surreal imagery" checked={draft.surrealMotifs} onChange={(surrealMotifs) => change({ surrealMotifs })}
+          text="Lets recurring motifs and section hooks be surreal or impossible (floating, fractured, dreamlike). Off keeps them physically plausible. Surreal imagery you describe yourself is kept either way." />
         <ToggleRow icon={Icon.storyWheel} label="Story wheel" checked={draft.storyWheel} onChange={(storyWheel) => change({ storyWheel })}
           text="Gives every song section a dramatic job (arrival, friction, escalation, a break, and release) so the story keeps moving instead of resetting." />
         <div className="control">

@@ -204,6 +204,32 @@ const migrations = [{ id: "001_initial_schema", sql: `
 ` }, { id: "009_local_authority_remote_render_staging", sql: `
   ALTER TABLE render_attempts ADD COLUMN remote_endpoint TEXT;
   ALTER TABLE render_attempts ADD COLUMN staging_evidence TEXT;
+` }, { id: "010_post_processing", sql: `
+  -- Per-clip post-processing (design_docs/05-post-processing-plan.md). Raw renders are never written; processed artifacts
+  -- live in <package>/postprocess/clip_NNN/<attempt id>.mp4 with a .json sidecar the save node writes.
+  CREATE TABLE postprocess_settings (
+    package_run_id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES martini_projects(id) ON DELETE CASCADE,
+    clip_index INTEGER NOT NULL, settings TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (package_run_id, clip_index)
+  );
+  CREATE TABLE postprocess_attempts (
+    id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES martini_projects(id) ON DELETE CASCADE, package_run_id TEXT NOT NULL,
+    clip_index INTEGER NOT NULL, status TEXT NOT NULL, cache_key TEXT NOT NULL, workflow_version TEXT NOT NULL,
+    settings TEXT NOT NULL, effective TEXT NOT NULL, requested_mode TEXT NOT NULL, resolved_mode TEXT, mode_source TEXT,
+    destination TEXT NOT NULL, endpoint TEXT, source_path TEXT NOT NULL, source_sha256 TEXT NOT NULL,
+    reference_asset_id TEXT, reference_path TEXT, reference_sha256 TEXT,
+    output_path TEXT NOT NULL, output_sha256 TEXT, output_size INTEGER, media TEXT, face_report TEXT, review_required INTEGER NOT NULL DEFAULT 0,
+    environment TEXT, comfy_job_id TEXT, prompt_id TEXT, cleanup_status TEXT NOT NULL DEFAULT 'not_requested', cleanup TEXT,
+    error TEXT, started_at TEXT NOT NULL, submitted_at TEXT, finished_at TEXT, runtime_ms INTEGER
+  );
+  CREATE INDEX postprocess_attempts_clip ON postprocess_attempts(package_run_id, clip_index, started_at);
+  CREATE INDEX postprocess_attempts_key ON postprocess_attempts(package_run_id, cache_key);
+  -- An explicit choice for the final stitch: the original render (bypass) or one processed attempt. No row = automatic.
+  CREATE TABLE postprocess_selection (
+    package_run_id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES martini_projects(id) ON DELETE CASCADE,
+    clip_index INTEGER NOT NULL, choice TEXT NOT NULL, attempt_id TEXT, selected_at TEXT NOT NULL, PRIMARY KEY (package_run_id, clip_index)
+  );
+  -- The exact per-clip files a stitch joined (package-relative), so later selection changes show as "clips changed since".
+  ALTER TABLE final_results ADD COLUMN clip_selection TEXT;
 ` }];
 
 /** Convert pre-ticket absolute paths below output/martini_shot into wire paths. */

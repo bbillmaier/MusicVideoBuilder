@@ -11,11 +11,17 @@ import re
 from typing import Any
 
 try:
-    from .dance_writer import format_timestamp, strip_reasoning
+    from .action_validation import (check_action_flow, parse_requirements, repair_message,
+                                    validate_requirements)
+    from .clip_instructions import TYPE_TEXT
+    from .dance_writer import format_timestamp, split_lookahead, strip_reasoning
     from .h3_prompt import _clean, _sentence
     from .ref2va_prompt import build_ref2va_prompt
 except ImportError:  # imported as top-level modules by the tests
-    from dance_writer import format_timestamp, strip_reasoning
+    from action_validation import (check_action_flow, parse_requirements, repair_message,
+                                   validate_requirements)
+    from clip_instructions import TYPE_TEXT
+    from dance_writer import format_timestamp, split_lookahead, strip_reasoning
     from h3_prompt import _clean, _sentence
     from ref2va_prompt import build_ref2va_prompt
 
@@ -34,7 +40,8 @@ Rules:
 - You MAY describe how the scene's own light falls on the performer: its color, direction, reflections, and shadows on skin, hair, and clothing.
 - Do not describe the music. Do not write dialogue or lyrics.
 - {movement_rule}
-- When a Director's notes block contains CONSTRAINT PRIORITY, treat MUST and ENTERING/EXITING STATE as hard requirements. MAY ADD IF COMPATIBLE is optional and MUST NOT is prohibited. Do not let optional style or hooks replace a MUST action.
+- The CLIP CARD is authoritative: TYPE, START, ACTIVITY, END, REQUIRED EVENT, and CHOSEN CAMERA are requirements; lines marked optional are used only when compatible; AVOID is prohibited. (Older messages use CONSTRAINT PRIORITY: MUST and ENTERING/EXITING STATE are requirements, MAY ADD IF COMPATIBLE is optional, MUST NOT is prohibited.)
+- Continuing or repeating the same activity across clips is valid. Do not invent new events, obstacles, props, or places just to make a clip different, and never let optional style or hooks replace the required action.
 
 Follow the output format exactly."""
 
@@ -109,10 +116,9 @@ def clip_context(
     history: list[dict[str, str]],
 ) -> str:
     """Where the clip sits, how it joins the previous one, and what came before."""
-    lines = [
-        f"This is clip {clip['index']} of {len(clips)} of the video (shot {section['number']} of {len(sections)}). "
-        f"Its music has {clip['energy']} RMS loudness relative to the whole song. This measures loudness, not emotion or required movement speed."
-    ]
+    # the clip's loudness is on the CLIP CARD's MUSIC line, so it is not repeated here
+    lines = [f"This is generated clip {clip['index']} of {len(clips)} of the video (production shot {section['number']} "
+             f"of {len(sections)})."]
     if clip["index"] == len(clips):
         lines.append("This is the final clip of the video: bring it to a clear, satisfying ending.")
     previous = history[-1] if history else None
@@ -146,52 +152,65 @@ def clip_context(
             block += f"At its last moment: {previous['ending']}\n"
         if previous.get("next_plan"):
             block += f"It was about to continue like this; start this clip from it:\n\"\"\"\n{previous['next_plan']}\n\"\"\"\n"
-        block += ("CONTINUE mid-flow: do not repeat it, keep the same character and style, and never pause or reset "
-                  "to a neutral stance. Timestamps restart at 00:00.000 at the start of this clip.")
+        block += ("CONTINUE mid-flow from that state: do not re-describe it, restart the action, or reset to a neutral "
+                  "stance. Carrying on with the same activity is correct; keep any directed stillness or held pose "
+                  "rather than inventing new motion. Timestamps restart at 00:00.000 at the start of this clip.")
         lines.append(block)
     return "\n\n".join(lines)
 
 
+CARD_HEADER = "CLIP CARD (the requirements for this clip; nothing later in this message overrides them)"
+# Card line prefixes that the Produce page's revisions rewrite in place (see mv_nodes._current_message).
+CARD_ACTIVITY, CARD_CAMERA, CARD_LOCATION = "ACTIVITY: ", "CHOSEN CAMERA: ", "LOCATION: "
+
+
+def format_card(card: list[tuple[str, str]]) -> str:
+    """One block of 'LABEL: value' lines; empty values are left out."""
+    return "\n".join([CARD_HEADER] + [f"{label}: {' '.join(str(value).split())}" for label, value in card if _clean(value)])
+
+
+def phrase_example(analysis: dict[str, Any]) -> str:
+    """A real later-phrase boundary for the timestamp format example, so a copied example is still a true boundary."""
+    phrases = analysis.get("phrases") or []
+    return format_timestamp(phrases[1]["start"]) if len(phrases) > 1 else format_timestamp(0.0)
+
+
 def build_clip_message(
-    *, scene_type: str, labels: str, scene_description: str, llm_notes: str, style_seed: dict[str, Any] | None,
-    style_name: str, location_text: str, has_location_label: bool, analysis: dict[str, Any], beat_timeline: bool,
+    *, scene_type: str, labels: str, card: list[tuple[str, str]], style_seed: dict[str, Any] | None,
+    style_name: str, analysis: dict[str, Any], beat_timeline: bool,
     context: str, lookahead: str, lyrics_block: str, lip_sync: bool, ask_signature: bool, signature: str,
     ask_camera: bool, previous_camera: str, ask_soundscape: bool, image_notes: list[str], music_description: str,
-    camera_sentence: str = "", energy_contrast: str = "",
-    ask_requirements: bool = False,
+    energy_contrast: str = "", ask_requirements: bool = False,
 ) -> str:
+    """The clip writer's message: a compact CLIP CARD (built by clip_instructions.build_card) followed by the music,
+    lyrics, continuity, and output format. Dance keeps its full choreography requirements and word minimum."""
     parts = [f"Write the {'choreography' if scene_type == 'Dance' else 'action'} for one clip of a music video."]
     parts.append(labels)
     if scene_type == "Dance" and style_seed:
         parts.append(
-            f"Dance style: {style_name}. Feel: {style_seed['feel']}. Optional move vocabulary (use only what fits the shot intention): "
+            f"Dance style: {style_name}. Feel: {style_seed['feel']}. Optional move vocabulary (use only what fits the ACTIVITY): "
             f"{', '.join(style_seed['signature_moves'])}. Dynamics: {style_seed['dynamics']}."
         )
-    if _clean(scene_description) and scene_type == "Dance":
-        parts.append(f"Shot intention (what the choreography expresses): {_clean(scene_description)}. "
-                     "Choreograph a sequence of specific moves around it; it guides the moves and is not one move to repeat. "
-                     "Continue from the supplied state rather than restarting it on each clip. "
-                     "Style vocabulary and visual hooks must not replace it or introduce conflicting actions.")
-    elif _clean(scene_description):
-        parts.append(f"Shot intention (primary action): {_clean(scene_description)}. "
-                     "Preserve its purpose and essential interaction, allowing expressive variation. "
-                     "Continue from the supplied state rather than restarting this action on each clip. "
-                     "Style vocabulary and visual hooks must not replace it or introduce conflicting actions.")
-    if _clean(llm_notes):
-        parts.append(f"Director's notes: {_clean(llm_notes)}")
-    if camera_sentence:
-        parts.append(f"Chosen camera (keep this framing and movement): {camera_sentence} "
-                     "Stage the action so its important body movements and interactions remain readable in this view.")
+    parts.append(format_card(card))
+    if scene_type == "Dance":
+        parts.append("ACTIVITY is what the choreography expresses. Choreograph a sequence of specific named moves around "
+                     "it; it guides the moves and is not one move to repeat. When START says a movement phrase is already "
+                     "in progress, continue that phrase instead of restarting it. Style vocabulary and optional details "
+                     "must not replace ACTIVITY or add conflicting actions.")
+    elif scene_type == "B-roll":
+        parts.append("ACTIVITY is what the camera shows of the place. Optional details must not add a performer, a plot "
+                     "event, or a different setting.")
+    else:
+        parts.append("ACTIVITY is the principal action. Carry it from START toward END. Continuing or repeating the same "
+                     "activity across clips is correct (a run can stay a run); do not invent doors, corners, obstacles, "
+                     "events, or new places to make this clip different. Optional details must not replace ACTIVITY or "
+                     "add another action.")
     if energy_contrast:
-        parts.append(f"Intentional musical contrast: {_clean(energy_contrast)}. Preserve this choice even when "
-                     "the loudness timeline differs; express musical accents within the chosen action.")
+        parts.append("Keep the intentional musical contrast on the MUSIC line even when the loudness timeline differs; "
+                     "express musical accents within the chosen action.")
     else:
         parts.append("Use musical accents to shape the chosen action. High loudness does not require large travel "
-                     "or acrobatics; quiet phrases do not require abandoning the shot intention.")
-    if location_text and not has_location_label:
-        parts.append(f"Location (do not label it): {location_text}")
-    elif location_text:
-        parts.append(f"Location details: {location_text}")
+                     "or acrobatics; quiet phrases do not require abandoning the ACTIVITY.")
     if image_notes:
         parts.append(
             "Attached images: " + " ".join(image_notes) + " Use them ONLY to choose actions that suit the clothing, "
@@ -222,8 +241,8 @@ def build_clip_message(
                       "Write one short paragraph per phrase developing the same principal action, not a new action for every phrase.")
         parts.append(
             f"Use this loudness timeline for phrasing, respecting any intentional contrast. {per_phrase} The first "
-            "paragraph has no timestamp. Every later paragraph MUST begin with its start time in exactly this form: "
-            '"At 00:03.200, ".\n' + timeline
+            "paragraph has no timestamp. Every later paragraph MUST begin with its own phrase start time from this list, "
+            f'written exactly like "At {phrase_example(analysis)}, " for the second phrase.\n' + timeline
         )
     elif scene_type == "Dance":
         parts.append("Write two or three paragraphs of specific choreography, a sequence of named moves across the clip.")
@@ -258,7 +277,7 @@ def build_clip_message(
     if ask_soundscape:
         headers.append("SOUNDSCAPE: <one sentence of sounds happening in the scene, not the music, e.g. engine hum and wind>")
     if ask_requirements:
-        headers.append("REQUIREMENTS: needs=<comma-separated exact Supported, Contradicted, or Unknown evidence terms this action relies on, or none> | start_position=<short label or unknown> | end_position=<short label or unknown> | start_posture=<short label or unknown> | end_posture=<short label or unknown>")
+        headers.append("REQUIREMENTS: needs=<up to four location-evidence phrases from the LOCATION line that this action physically depends on, copied word for word, or none> | start_position=<where the performer is at the first moment, a few words, or unknown> | end_position=<where at the last moment, or unknown> | start_posture=<e.g. running, standing, kneeling, or unknown> | end_posture=<at the last moment, or unknown>")
     if clip_needs_ending(context):
         headers.append(
             "ENDING_STATE: <one sentence: what is in progress at the clip's last moment, facing direction, and position>"
@@ -273,7 +292,8 @@ def build_clip_message(
     else:
         rule = (f"Aim for at most {most} words of action for this {analysis['duration']:.2f}-second clip. "
                 "There is no minimum: use fewer words for a simple action. Keep one principal action with secondary "
-                "gestures and describe only transitions that have time to happen.")
+                "gestures and describe only transitions that have time to happen. A sustained action may simply "
+                "continue for the whole clip.")
     if scene_type != "B-roll" and "<Subject 1>" in labels:
         rule = "The first sentence must name <Subject 1>. " + rule
     parts.append(rule + "\n\nOutput format (exactly these headers, in this order, nothing before or after):\n" + "\n".join(headers))
@@ -289,9 +309,25 @@ _HEADERS = ("STYLE_INTRO", "ACTION_SUMMARY", "ACTION", "CHOREOGRAPHY", "CAMERA",
 _SECTION = re.compile(r"^\s*\**\s*(" + "|".join(_HEADERS) + r")\s*\**\s*:\s*", re.IGNORECASE | re.MULTILINE)
 
 
+# Instruction text the model sometimes echoes after its answer (seen as a trailing "REVISION REQUEST:" in saved
+# ending states). Everything from the echo on is discarded so it never becomes continuity state.
+_ECHO = re.compile(r"^[ \t>*_#]*(REVISION REQUEST|PRODUCER CHANGES|PRODUCER DIRECTION|DRAFT|LENGTH \(overrides[^)]*\)"
+                   r"|Output format|The draft below has)\s*[:(]", re.IGNORECASE | re.MULTILINE)
+_TEMPLATE_TEXT = re.compile(r"<[^<>]*(?:one sentence|the paragraphs|short|phrase|label)[^<>]*>|what is in progress at the "
+                            r"clip's last moment", re.IGNORECASE)
+_TERMINAL = ('.', '!', '?', '"', "'", '”', '’', ')', '…')
+
+
 def parse_clip_response(text: str, scene_type: str) -> tuple[dict[str, str], list[str]]:
+    """Parsed fields plus warnings. parsed["issues"] lists structural problems (echoed instructions, a template
+    placeholder as the ending state, a truncated action) that the package writer may repair once."""
     warnings: list[str] = []
+    issues: list[str] = []
     text = strip_reasoning(text)
+    echo = _ECHO.search(text)
+    if echo and echo.start() > 0:
+        issues.append(f"the response repeated instruction text ('{echo.group(1)}'); the text from there on was discarded")
+        text = text[:echo.start()].rstrip()
     matches = list(_SECTION.finditer(text))
     sections: dict[str, str] = {}
     for index, match in enumerate(matches):
@@ -300,8 +336,17 @@ def parse_clip_response(text: str, scene_type: str) -> tuple[dict[str, str], lis
     action = sections.get("ACTION") or sections.get("CHOREOGRAPHY") or ""
     if not action:
         warnings.append("WARNING: LLM response had no ACTION header; using the whole response.")
+        issues.append("the response had no ACTION header")
         action = _SECTION.sub("", text).strip()
     action = re.sub(r"\*\*|__|^#+\s*", "", action, flags=re.MULTILINE).strip()
+    if action and not action.endswith(_TERMINAL):
+        issues.append("the ACTION ends mid-sentence (the response may be truncated)")
+    if _TEMPLATE_TEXT.search(action):
+        issues.append("the ACTION contains output-template placeholder text")
+    ending = _clean(sections.get("ENDING_STATE") or sections.get("ENDING_POSITION"))
+    if ending and _TEMPLATE_TEXT.search(ending):
+        issues.append(f"the ENDING_STATE is template text ('{ending[:60]}'); it is not used as continuity state")
+        ending = ""
     intro = _clean(sections.get("STYLE_INTRO"))
     if not intro:
         warnings.append("WARNING: LLM gave no STYLE_INTRO; using a generic one.")
@@ -319,10 +364,11 @@ def parse_clip_response(text: str, scene_type: str) -> tuple[dict[str, str], lis
         "action": action,
         "camera": _clean(sections.get("CAMERA")),
         "soundscape": _clean(sections.get("SOUNDSCAPE")),
-        "ending": _clean(sections.get("ENDING_STATE") or sections.get("ENDING_POSITION")),
+        "ending": ending,
         "signature": _clean(sections.get("SIGNATURE_COMBO")),
         "requirements": _clean(sections.get("REQUIREMENTS")),
-    }, warnings
+        "issues": issues,
+    }, warnings + [f"WARNING: {issue}." for issue in issues]
 
 
 def setting_sentence(location_text: str, location_label: str) -> str:
@@ -427,3 +473,104 @@ def continuity_sentence(seconds: float, has_person: bool) -> str:
     )
 
 
+# ----- checks shared by the package writer and Produce-page revisions (pure; the LLM call is injected) -----
+
+def evaluate_clip(parsed: dict[str, Any], *, clip_seconds: float, transition: str, end_mode: str | None,
+                   intention: str, evidence: dict[str, list[str]] | None, previous: dict[str, Any] | None,
+                   check_receipt: bool, scene: str = "Freeform") -> dict[str, Any]:
+    """Structural, continuity-flow, and (opt-in) receipt checks for one parsed clip response.
+
+    Returns {conflicts, unknowns, requirements, receipt}. Conflicts are clear problems worth one repair; unknowns are
+    reported as unverified. Repetition is never checked, so a sustained run or repeated phrase is never a conflict."""
+    action, next_plan = split_lookahead(parsed["action"], clip_seconds)
+    conflicts = list(parsed.get("issues", ()))
+    if end_mode is not None:
+        conflicts += check_action_flow(action, next_plan, end_mode=end_mode, intention=intention, transition=transition,
+                                       scene=scene)
+    unknowns: list[str] = []
+    requirements: dict[str, Any] = {}
+    if check_receipt and parsed.get("requirements"):
+        requirements = parse_requirements(parsed["requirements"])
+        found, unknowns = validate_requirements(requirements, evidence, previous, transition)
+        conflicts += found
+        if transition in ("Continue", "New angle") and previous and not any(
+                requirements.get(key, "unknown").lower() != "unknown" for key in ("start_position", "start_posture")):
+            unknowns.append(f"the receipt does not state the starting position or posture at the {transition} join")
+    return {"conflicts": conflicts, "unknowns": unknowns, "requirements": requirements,
+            "receipt": bool(parsed.get("requirements"))}
+
+
+def validation_notes(result: dict[str, Any], check_receipt: bool) -> list[str]:
+    """Report lines in the forms production-rules.ts reads: validated, unverified, skipped."""
+    if not check_receipt:
+        return []
+    if not result["receipt"]:
+        return ["NOTE: action validation skipped; the LLM returned no REQUIREMENTS receipt."]
+    if result["unknowns"]:
+        return ["NOTE: action validation unverified: " + "; ".join(result["unknowns"]) + "."]
+    summary = ", ".join(f"{key}={', '.join(value) if isinstance(value, list) else value}"
+                        for key, value in result["requirements"].items() if value and key != "placeholders")
+    return [f"NOTE: action validation validated: {summary or 'needs=none'}."]
+
+
+def check_and_repair(run, llm, message: str, response: str, scene: str, image_kwargs: dict[str, Any], temperature: float,
+                      max_tokens: int, repair_seed: int, check: Any, validate: bool) -> tuple[str, dict, list[str], dict]:
+    """Parse, check, and make at most one repair call. Returns (response, parsed, warnings, result).
+
+    Without validate (validate_actions off) problems are only reported. With it, a repair is kept when it has fewer
+    conflicts than the draft; whatever remains is reported as unresolved, never as valid."""
+    parsed, warnings = parse_clip_response(response, scene)
+    result = check(parsed)
+    flow = [c for c in result["conflicts"] if c not in parsed.get("issues", ())]
+    if result["conflicts"] and validate:
+        repaired = run(llm, repair_message(message, response, result["conflicts"]), image_kwargs, temperature,
+                   max_tokens, repair_seed, system_prompt(scene))
+        repaired_parsed, repaired_warnings = parse_clip_response(repaired, scene)
+        repaired_result = check(repaired_parsed)
+        if len(repaired_result["conflicts"]) < len(result["conflicts"]):
+            fixed = [c for c in result["conflicts"] if c not in repaired_result["conflicts"]]
+            warnings = [w for w in repaired_warnings] + ["NOTE: repaired action validation: " + c for c in fixed]
+            response, parsed, result = repaired, repaired_parsed, repaired_result
+        warnings += ["WARNING: action validation could not repair: " + c for c in result["conflicts"]]
+    elif flow:
+        warnings += ["WARNING: continuity: " + c for c in flow]
+    warnings += validation_notes(result, validate) if not result["conflicts"] else []
+    if validate:
+        parsed["requirements"] = result["requirements"]
+    return response, parsed, warnings, result
+
+
+def current_card(card: str, record: dict[str, Any], notes: dict[str, Any], intention: str) -> tuple[str, str]:
+    """The CLIP CARD with the clip's changed settings written into its lines. Returns (card, replaced intention)."""
+    old_intention, lines = "", []
+    for line in card.split("\n"):
+        if line.startswith(CARD_ACTIVITY) and intention:
+            old_intention = line[len(CARD_ACTIVITY):].rstrip(".")
+            line = CARD_ACTIVITY + intention
+        elif line.startswith(CARD_CAMERA) and "camera" in notes:
+            if record.get("ask_camera") or not record.get("camera_sentence"):
+                continue  # the LLM picks the camera; the CAMERA header asks for it
+            line = CARD_CAMERA + record["camera_sentence"]
+        elif line.startswith(CARD_LOCATION) and ("location" in notes or "ref_location" in notes):
+            label = re.match(r"<Subject \d+>", line[len(CARD_LOCATION):])
+            text = _clean(record.get("location_text"))
+            # a swapped location image makes the recorded image evidence stale, so it is dropped
+            evidence = "" if "ref_location" in notes else (line.split(". Evidence — ", 1)[1:] or [""])[0]
+            line = CARD_LOCATION + " — ".join(p for p in (label.group(0) if label else "", text) if p) \
+                + (f". Evidence — {evidence}" if evidence else "")
+        elif line.startswith("TYPE: ") and "scene" in notes:
+            line = "TYPE: " + TYPE_TEXT.get(record["scene"], record["scene"])
+        elif line.startswith("END: ") and record.get("ending_override"):
+            line = "END: The clip MUST end in this state: " + _clean(record["ending_override"])
+        lines.append(line)
+    return "\n".join(lines), old_intention
+
+
+def before_output_format(message: str, extra: list[str]) -> str:
+    """Insert revision text before the final length-and-output-format paragraph, so the response format stays the
+    last thing the model reads (appending after it made the model echo 'REVISION REQUEST:' into its answer)."""
+    extra = [part for part in extra if part]
+    head, separator, tail = message.rpartition("\n\n")
+    if separator and "Output format (exactly these headers" in tail:
+        return "\n\n".join([head] + extra + [tail])
+    return "\n\n".join([message] + extra)

@@ -165,7 +165,7 @@ function ProduceContent({ project, comfy, onNavigate }: { project: ProjectDetail
 
     {error && <Notice tone="error" live onDismiss={() => setError("")}>{error}</Notice>}
     {comfyDown && <Notice tone="error">ComfyUI is not reachable at {comfy!.endpoint}. Start ComfyUI and wait for it to finish loading. Nothing is lost: rendered clips and the queue state are saved.</Notice>}
-    {otherBusy && <Notice tone="warn">Another project is {overview.busy!.kind === "render" ? "rendering" : overview.busy!.kind === "stitch" ? "stitching its final video" : "writing a prompt package"}. ComfyUI runs one job at a time.</Notice>}
+    {otherBusy && <Notice tone="warn">Another project is {overview.busy!.kind === "render" ? "rendering" : overview.busy!.kind === "stitch" ? "stitching its final video" : overview.busy!.kind === "postprocess" ? "post-processing clips" : "writing a prompt package"}. ComfyUI runs one job at a time.</Notice>}
 
     <PackagePanel overview={overview} now={now} writing={writing} pending={pending} comfyDown={comfyDown}
       onWrite={() => act(() => window.martini.produce.writePackage(project.id))}

@@ -20,6 +20,7 @@ On first start the pod installs:
 - ComfyUI
 - the Martini Shot nodes
 - the MiniMax H3 video models (about 70 GB)
+- the post-processing nodes (ReActor face treatment, SeedVR2 upscaling) and the models for the worker's default memory mode (about 18 GB for High VRAM, 5 GB for Low VRAM)
 
 Everything is stored on your network volume, so later starts take a few minutes instead of an hour.
 
@@ -58,6 +59,24 @@ in Settings at any time; project paths and local folder actions do not change.
 
 The default Jupyter password is the same for everyone, and Jupyter gives full control of the pod. Set `JUPYTER_PASSWORD` under **Environment Variables** to use your own.
 
+## Post-processing memory mode
+
+The app's **Post-processing** page runs face treatment (ReActor, CodeFormer) and SeedVR2 restoration/upscaling per clip before the final stitch. Set the worker's default memory mode under **Environment Variables**:
+
+```
+POST_PROCESSING_VRAM_MODE=high_vram
+```
+
+| Value | Targets | SeedVR2 starting preset |
+|---|---|---|
+| `high_vram` (default when unset) | 48 GB VRAM, 96 GB RAM recommended | 7B FP16, temporal batch 9, no VAE tiling, model kept on the GPU |
+| `low_vram` | 16 GB VRAM / 64 GB RAM | 3B FP8, temporal batch 5, VAE tiling, model offloaded to RAM between phases |
+
+- Any other value stops setup with an error that names the variable. It is never silently replaced.
+- A clip set to **Low VRAM** or **High VRAM** in the app overrides this default; **Worker default** follows it.
+- These are starting presets to measure, not guaranteed limits. The default is a setting you choose; the pod does not detect its GPU size.
+- Setup downloads the models for the default mode. `POST_PROCESSING_MODELS=all` installs both modes, so clips can override either way. Every download is resumable and checked against its published size and sha256.
+
 ## Choosing models
 
 Set these under **Edit Template → Environment Variables** when you deploy. Leaving them out gives the defaults, which are what Martini Shot uses.
@@ -86,6 +105,9 @@ Comma lists download several at once, e.g. `DIRECTOR_LLMS=qwen3vl-8b-fp8,qwen3vl
 | `SKIP_MODELS` | `0` | `1` installs without downloading models (a quick, cheap test) |
 | `HF_TOKEN` | | Only for gated Hugging Face models |
 | `MARTINI_SHOT_TOKEN` | | Recommended secret for Martini Shot's project-file API |
+| `POST_PROCESSING_VRAM_MODE` | `high_vram` | `low_vram`. The worker default for post-processing jobs (see above) |
+| `POST_PROCESSING_MODELS` | `mode` | `all`, `low_vram`, `high_vram`, `face` (face models only), `none` |
+| `POST_PROCESSING` | `1` | `0` skips ReActor, SeedVR2 and their models |
 
 ## Troubleshooting
 
@@ -102,6 +124,6 @@ The Martini Shot app is never blocked by this check.
 - **Updates:** after node updates, restart the pod; no image rebuild or model re-download is needed.
 - **Local authority:** the database and all project folders stay local. You may switch the workflow destination between any stages or clips.
 - **Logs:** if something fails, the full log is in `/workspace/logs/setup.log`. ComfyUI's own log is in `/workspace/logs/comfyui.log`.
-- **Licenses:** the models come from public Hugging Face repos (Comfy-Org, Kijai and community finetunes), each under its own license. Check them before using the output commercially.
+- **Licenses:** the models come from public Hugging Face repos (Comfy-Org, Kijai and community finetunes), each under its own license. Check them before using the output commercially. Post-processing installs ReActor (AGPL-3.0 code) and SeedVR2 (Apache-2.0 code); the face-swap model `inswapper_128.onnx` (InsightFace) is licensed for non-commercial research use only. The full README lists every node and model license.
 
 **Source and full docs:** https://github.com/bbillmaier/MusicVideoBuilder/tree/main/cloud/runpod

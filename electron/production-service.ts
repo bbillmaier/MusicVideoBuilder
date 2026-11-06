@@ -22,7 +22,7 @@ import {
 import { db, getMachineSettings } from "./db";
 import { locationsOverview } from "./location-service";
 import { storyFileHash } from "./location-rules";
-import { previewText, storySignature, parseStoryPlan, reportBlock, type RawStoryPlan } from "./plan-rules";
+import { previewText, storySignature, parseStoryPlan, reportBlock, surrealSetting, type RawStoryPlan } from "./plan-rules";
 import { directorLlmOptions, planOverview, renderSteps, writeSectionAction } from "./plan-service";
 import { claimProduction, productionBusy, timelineApplying } from "./production-lock";
 import {
@@ -32,7 +32,7 @@ import {
 } from "./production-rules";
 import { ensureComfyProjectSaved, getProject, projectIdentity, suppliedLocationNames } from "./project-service";
 import { isInside } from "./project-rules";
-import { RemoteRenderStaging, remoteOutputPath, remotePackageRoot } from "./remote-render-staging";
+import { RemoteRenderStaging, remoteOutputPath, remotePackageRoot, remoteRenderPackage } from "./remote-render-staging";
 
 const PACKAGE_STAGE = "prompt_package";
 const now = () => new Date().toISOString();
@@ -297,14 +297,16 @@ export async function produceOverview(projectId: unknown): Promise<ProduceOvervi
     packageNotes.push("The plan's section actions changed after this prompt package was written, and its clips were not rewritten. Write a new prompt package, or edit the section again on Produce to rewrite its clips.");
   }
   // Steps are read at render time, so changing them never makes the package's settings out of date.
-  const promptSettings = (direction: CreativeDirection) => JSON.stringify({ ...direction, renderSteps: undefined });
+  const promptSettings = (direction: CreativeDirection) => JSON.stringify({ ...direction, renderSteps: undefined, surrealMotifs: surrealSetting(direction) });
   if (pkg && settings?.direction && promptSettings(settings.direction) !== promptSettings(plans.direction)) {
     packageNotes.push("Shot mix, pacing, lip-sync, or prompt settings changed on Direction. This package keeps its saved settings; write a new prompt package to apply the new values.");
   }
   if (pkg && settings) {
     if (settings.planRunId !== plans.planRun?.id) packageStale.push("The director plan changed after this prompt package was written.");
     else if (settings.motifWeight !== plans.direction.motifWeight) {
-      packageNotes.push(`The surreal motif weight changed on Direction (${settings.motifWeight} → ${plans.direction.motifWeight}). These prompts were written with ${settings.motifWeight}; a new prompt package would use the new value and start a new clip folder.`);
+      packageNotes.push(`The recurring motif frequency changed on Direction (${settings.motifWeight} → ${plans.direction.motifWeight}). These prompts were written with ${settings.motifWeight}; a new prompt package would use the new value and start a new clip folder.`);
+    } else if (settings.direction && surrealSetting(settings.direction) !== surrealSetting(plans.direction)) {
+      packageNotes.push(`Surreal imagery was turned ${surrealSetting(plans.direction) ? "on" : "off"} on Direction. These prompts keep their motifs; a new prompt package would use the new setting.`);
     }
   }
 
@@ -326,6 +328,7 @@ export async function produceOverview(projectId: unknown): Promise<ProduceOvervi
   if (latestRow && (latestRow.status === "queued" || latestRow.status === "running")) packageBlockers.push("A prompt package is being written.");
   if (busy?.kind === "render") packageBlockers.push(busy.projectId === project.id ? "Clips are rendering. Use Stop after current clip and wait for it to finish first." : "Another project is rendering.");
   if (busy?.kind === "stitch") packageBlockers.push("A final video is being stitched. Wait for it to finish.");
+  if (busy?.kind === "postprocess") packageBlockers.push("Clips are being post-processed. Wait for the Post-processing queue to finish.");
   if (timelineApplying.has(project.id)) packageBlockers.push("The song timeline is being applied to the plan. Wait for it to finish.");
   const latestFailed = latestRow && (latestRow.status === "failed" || latestRow.status === "interrupted") && latestRow.id !== currentRow?.id;
   const canWritePackage = !packageBlockers.length && (!pkg || packageStale.length > 0 || packageNotes.length > 0 || Boolean(latestFailed));
@@ -378,7 +381,7 @@ export async function produceOverview(projectId: unknown): Promise<ProduceOvervi
   if (packageStale.length) renderBlockers.push(`${packageStale.join(" ")} Write a new prompt package before rendering more clips.`);
   if (latestRow && (latestRow.status === "queued" || latestRow.status === "running")) renderBlockers.push("A prompt package is being written.");
   if (busy && !(busy.kind === "render" && busy.projectId === project.id)) {
-    renderBlockers.push(busy.projectId !== project.id ? "Another project is using ComfyUI." : busy.kind === "stitch" ? "The final video is being stitched." : "A prompt package is being written.");
+    renderBlockers.push(busy.projectId !== project.id ? "Another project is using ComfyUI." : busy.kind === "stitch" ? "The final video is being stitched." : busy.kind === "postprocess" ? "Clips are being post-processed." : "A prompt package is being written.");
   }
   if (pkg && !missing.length) renderBlockers.push("Every clip in this package is rendered.");
 
@@ -500,6 +503,7 @@ async function executePackage(runId: string, projectId: string, settings: Packag
       const direction = finalSettings.direction;
       const run = await runWorkflowTemplate(development, "04-write-prompt-package.json", {
         project_name: project.slug, seed: finalSettings.seed, director_llm: llms.selected, render_name: finalSettings.renderName, motif_weight: finalSettings.motifWeight,
+        surreal_motifs: surrealSetting(direction),
         dance_style: direction.danceStyle, target_shot_seconds: direction.targetShotSeconds, min_shot_seconds: direction.minShotSeconds,
         max_shot_seconds: direction.maxShotSeconds, cut_rate_vs_energy: direction.cutRateVsEnergy, broll_amount: direction.brollAmount,
         performance_vs_dance: direction.performanceVsDance, freeform_amount: direction.freeformAmount, location_variety: direction.locationVariety,
@@ -864,10 +868,9 @@ async function renderClip(queueId: string, projectId: string, packageRunId: stri
     // The local manifest stays authoritative and contains a local absolute path.
     // The remote loader accepts an output-relative path, so send only a cloned
     // wire value for this prompt; never rewrite the local render_package.json.
-    const remotePackage = remote ? {
-      ...renderPackage,
-      folder: `martini_shot/${projectIdentity(projectId).slug}/${path.relative(projectIdentity(projectId).projectPath, folder).split(path.sep).join("/")}`,
-    } : renderPackage;
+    const remotePackage = remote
+      ? remoteRenderPackage(renderPackage, projectIdentity(projectId).slug, projectIdentity(projectId).projectPath)
+      : renderPackage;
     const values = {
       render_package: remotePackage, loader_mode: mode, clip_index: clip.clip_index, noise_seed: seed,
       aspect_ratio: direction?.aspectRatio ?? "4:3", render_megapixels: direction?.renderMegapixels ?? 1,

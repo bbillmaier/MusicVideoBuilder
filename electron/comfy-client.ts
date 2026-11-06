@@ -95,7 +95,32 @@ export type WorkflowOptions = {
   onPreview?(frame: PreviewFrame): void;
   /** Explicit worker selection. Omitted always means the configured local ComfyUI. */
   endpoint?: string;
+  /** Polled while waiting. Once true, the prompt is removed from ComfyUI's queue (pending) or interrupted (running), and the
+   *  run ends with ComfyCanceledError. Checked before submitting too, so a cancel during remote staging submits nothing. */
+  isCanceled?(): boolean;
 };
+
+/** The run was canceled through WorkflowOptions.isCanceled. */
+export class ComfyCanceledError extends Error {
+  constructor(message = "Canceled.") { super(message); this.name = "ComfyCanceledError"; }
+}
+
+/** Removes a pending prompt from ComfyUI's queue, or interrupts it when it is the one running. Interrupting only this prompt
+ *  needs a ComfyUI that accepts {prompt_id} on /interrupt; the queue check first makes sure another job is never stopped. */
+export async function interruptPrompt(endpoint: string, promptId: string): Promise<"removed" | "interrupted" | "not_found"> {
+  const queue = await request(endpoint, "/queue");
+  if (!queue.ok) throw new Error(`Could not read the ComfyUI queue (HTTP ${queue.status}).`);
+  const body = await queue.json() as { queue_running?: unknown[][]; queue_pending?: unknown[][] };
+  if ((body.queue_pending || []).some((item) => item[1] === promptId)) {
+    await request(endpoint, "/queue", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ delete: [promptId] }) });
+    return "removed";
+  }
+  if ((body.queue_running || []).some((item) => item[1] === promptId)) {
+    await request(endpoint, "/interrupt", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt_id: promptId }) });
+    return "interrupted";
+  }
+  return "not_found";
+}
 
 /** A workflow that ComfyUI accepted but that failed (or whose cleanup failed). Keeps whatever ComfyUI reported for diagnostics.
  *  `completed` is true when the workflow itself succeeded and only the cleanup failed. */
@@ -239,19 +264,28 @@ async function queuePosition(endpoint: string, promptId: string): Promise<Workfl
 }
 
 async function waitForPrompt(endpoint: string, promptId: string, onProgress?: (progress: WorkflowProgress) => void,
-  waitWhileQueued = false): Promise<{ outputs: unknown; messages: unknown[] }> {
+  waitWhileQueued = false, isCanceled?: () => boolean): Promise<{ outputs: unknown; messages: unknown[] }> {
   const deadline = Date.now() + 30 * 60 * 1000;
   let last = "";
   let unseen = 0;
+  let cancelSent: number | null = null;
   while (waitWhileQueued || Date.now() < deadline) {
+    if (isCanceled?.() && cancelSent === null) {
+      cancelSent = Date.now();
+      const result = await interruptPrompt(endpoint, promptId).catch(() => "not_found" as const);
+      if (result === "removed") throw new ComfyCanceledError("Canceled before ComfyUI started it.");
+    }
     const response = await request(endpoint, `/history/${encodeURIComponent(promptId)}`);
     if (!response.ok) throw new Error(`Could not read ComfyUI history (HTTP ${response.status}).`);
     const history = await response.json() as Record<string, HistoryItem>;
     const item = history[promptId];
     if (item?.status?.status_str === "success") return { outputs: item.outputs || {}, messages: item.status.messages || [] };
     if (item?.status?.status_str === "error") {
+      if (cancelSent !== null) throw new ComfyCanceledError("Canceled while ComfyUI was running it.");
       throw new ComfyWorkflowError(historyError(item.status.messages), promptId, item.outputs || {}, item.status.messages || [], null, false);
     }
+    // Interrupt sent but nothing recorded for a minute: treat the prompt as gone rather than wait forever.
+    if (cancelSent !== null && !item && Date.now() - cancelSent > 60_000) throw new ComfyCanceledError("Canceled; ComfyUI no longer lists the job.");
     if (onProgress || waitWhileQueued) {
       const progress = await queuePosition(endpoint, promptId);
       const key = JSON.stringify(progress);
@@ -378,10 +412,11 @@ export async function runWorkflowTemplate(isDevelopment: boolean, name: string, 
     if (options.onProgress || options.onPreview) {
       stopWatching = watchSteps(endpoint, clientId, prompt, (step) => options.onProgress?.({ phase: "running", step }), options.onPreview);
     }
+    if (options.isCanceled?.()) throw new ComfyCanceledError("Canceled before anything was submitted.");
     promptId = await submitPrompt(endpoint, prompt, clientId);
     await updateComfyJob(job.id, { promptId, status: "running" });
     options.onSubmitted?.(promptId);
-    result = await waitForPrompt(endpoint, promptId, options.onProgress, options.waitWhileQueued);
+    result = await waitForPrompt(endpoint, promptId, options.onProgress, options.waitWhileQueued, options.isCanceled);
     stopWatching();
     if (staging) {
       const stagedProjectId = projectId!;
@@ -401,6 +436,7 @@ export async function runWorkflowTemplate(isDevelopment: boolean, name: string, 
       cleanup = settings.vramCleanup ? await releaseMemory(endpoint, onCleanup) : skippedCleanup();
       if (!settings.vramCleanup) onCleanup(cleanup);
     }
+    if (error instanceof ComfyCanceledError) throw error;
     const partial = error instanceof ComfyWorkflowError ? error : null;
     throw new ComfyWorkflowError(message, promptId, partial?.outputs ?? null, partial?.messages ?? [], cleanup, false);
   }

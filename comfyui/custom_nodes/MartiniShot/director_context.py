@@ -38,6 +38,46 @@ def _event_allocation(analysis: dict[str, Any], story: dict[int, dict[str, Any]]
     return [{"id": "required-event-1", "event": event, "section": int(number)}]
 
 
+_EVENT_STOP = {"the", "and", "with", "one", "scene", "moment", "shot", "time", "during", "where", "that", "this", "event",
+               "single", "final", "big", "required"}
+
+
+def _event_stems(text: str) -> set[str]:
+    import re
+
+    def stem(word: str) -> str:
+        for suffix in ("ing", "es", "ed", "er", "s", "e"):
+            if len(word) > len(suffix) + 2 and word.endswith(suffix):
+                return word[:-len(suffix)][:6]
+        return word[:6]
+    return {stem(w) for w in re.findall(r"[a-z]+", str(text or "").lower()) if len(w) > 2 and w not in _EVENT_STOP}
+
+
+def event_mentioned(event: str, text: str) -> bool:
+    """Whether clip prompt text names the event (most of its content words). Prompt coverage only: it says nothing
+    about whether the rendered video shows it."""
+    wanted = _event_stems(event)
+    return bool(wanted) and len(wanted & _event_stems(text)) * 2 >= len(wanted) + (1 if len(wanted) > 2 else 0)
+
+
+def required_event_report(context: dict[str, Any], production_shots: list[dict[str, Any]],
+                          segments: list[dict[str, Any]], prompt_text) -> list[dict[str, Any]]:
+    """Allocation, prompt coverage, and (always) unverified visual fulfillment for each required event.
+
+    production_shots: [{number, required_events}] (1-based shot numbers, as in segments.json's 'section').
+    prompt_text(segment) -> the clip's current prompt text."""
+    report = []
+    for event in context.get("required_events", ()):
+        shots = [s["number"] for s in production_shots
+                 if any(e.get("id") == event.get("id") for e in s.get("required_events", ()))]
+        clips = [int(seg["index"]) for seg in segments if int(seg.get("section", 0)) in shots]
+        mentions = [int(seg["index"]) for seg in segments if int(seg["index"]) in clips
+                    and event_mentioned(event.get("event", ""), prompt_text(seg))]
+        report.append({"event": event.get("event", ""), "section": event.get("section"), "shots": shots, "clips": clips,
+                       "prompt_mentions": mentions, "visual": "unverified"})
+    return report
+
+
 def build_director_context(project: str, analysis: dict[str, Any], story: dict[int, dict[str, Any]],
                            contract: dict[str, str], settings: dict[str, Any]) -> dict[str, Any]:
     """Persisted, inspectable context that is stable between planning and prompt writing."""
@@ -49,14 +89,21 @@ def build_director_context(project: str, analysis: dict[str, Any], story: dict[i
             "start": round(float(section.get("start", 0)), 3), "end": round(float(section.get("end", 0)), 3),
             "role": _clean(section.get("role")), "energy": round(float(section.get("energy", 0)), 3),
             "incoming_state": _clean(beat.get("starts")), "must_change": _clean(beat.get("turn") or beat.get("beat")),
+            "turn": _clean(beat.get("turn")),
             "outgoing_state": _clean(beat.get("ends")), "avoid": _clean(beat.get("avoid")),
             "anchor": _clean(beat.get("anchor")),
+            "scene_source": _clean(beat.get("scene_source")) or ("planner" if beat.get("scene") else "rules"),
         }
+    issues = [f"Section {number}: {_clean(beat['scene_issue'])}" for number, beat in sorted(story.items(), key=lambda i: int(i[0]))
+              if beat.get("scene_issue")]
+    if _clean(contract.get("event_note")):
+        issues.append(_clean(contract.get("event_note")))
     return {
         "schema_version": SCHEMA_VERSION, "project": project,
         "song": {"duration": round(float(analysis.get("duration", 0)), 3), "bpm": round(float(analysis.get("bpm", 0)), 3)},
-        "creative_contract": {key: _clean(contract.get(key)) for key in ("look", "motif", "event")},
+        "creative_contract": {key: _clean(contract.get(key)) for key in ("look", "motif", "event", "concept", "motif_role", "event_note")},
         "required_events": _event_allocation(analysis, story, contract.get("event", "")),
+        "planning_issues": issues,
         "section_states": states,
         "settings": {key: settings[key] for key in ("seed", "story_wheel", "min_locations") if key in settings},
     }
@@ -79,20 +126,19 @@ def attach_context_to_shots(shots: list[dict[str, Any]], context: dict[str, Any]
     states = context.get("section_states", {})
     for shot in shots:
         state = states.get(str(shot.get("_section", "")), {})
-        must = [_clean(shot.get("scene_description")), _clean(state.get("must_change"))]
-        must += [_clean(event.get("event")) for event in shot.get("_required_events", ())]
-        must = [item for item in dict.fromkeys(must) if item]
-        may = [item for item in (_clean(contract.get("look")), _clean(contract.get("motif")), _clean(state.get("anchor"))) if item]
-        forbidden = [_clean(state.get("avoid"))] if _clean(state.get("avoid")) else []
-        lines = ["CONSTRAINT PRIORITY (follow MUST before MAY):"]
-        if must:
-            lines.append("MUST: " + " | ".join(must))
-        if state.get("incoming_state"):
-            lines.append("ENTERING STATE: " + _clean(state["incoming_state"]))
-        if state.get("outgoing_state"):
-            lines.append("EXITING STATE: " + _clean(state["outgoing_state"]))
-        if may:
-            lines.append("MAY ADD IF COMPATIBLE: " + " | ".join(may))
-        if forbidden:
-            lines.append("MUST NOT: " + " | ".join(forbidden))
-        shot["_director_context_card"] = "\n".join(lines)
+        # Structured, not pre-rendered: the package writer decides per generated clip whether the section's entering
+        # state or destination applies (clip_instructions.continuity_plan), so intermediate clips never get both.
+        shot["_director_context"] = {
+            "entering": _clean(state.get("incoming_state")), "exiting": _clean(state.get("outgoing_state")),
+            "turn": _clean(state.get("turn")), "anchor": _clean(state.get("anchor")), "avoid": _clean(state.get("avoid")),
+            "look": _clean(contract.get("look")), "motif": _clean(contract.get("motif")),
+            "motif_role": _clean(contract.get("motif_role")),
+        }
+        lines = [f"ACTIVITY: {_clean(shot.get('scene_description')) or '(scene default)'}"]
+        lines += [f"{label}: {value}" for label, value in (
+            ("SECTION STARTS FROM (first story shot only)", shot["_director_context"]["entering"]),
+            ("SECTION TURN", shot["_director_context"]["turn"]),
+            ("SECTION DESTINATION (last clip of the section only)", shot["_director_context"]["exiting"]),
+            ("REQUIRED EVENT", " | ".join(_clean(e.get("event")) for e in shot.get("_required_events", ()))),
+            ("AVOID", shot["_director_context"]["avoid"])) if value]
+        shot["_director_context_card"] = "\n".join(lines)  # audit copy; the clip prompt gets a per-clip card

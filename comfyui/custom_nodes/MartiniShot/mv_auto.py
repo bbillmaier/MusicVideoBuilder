@@ -444,14 +444,10 @@ def plan_auto_shots(analysis: dict[str, Any], refs: list[dict[str, Any]], *, see
                 "Freeform": f"The performer moves through {place or 'the location'}, exploring and interacting with it.",
                 "Dance": "",
             }[scene]
+            # The role and loudness are structured (_role, _section_energy) and the Story Wheel fields live in
+            # _story_wheel; the package writer turns them into one clip card, so they are not repeated as prose here.
             notes = (f"This is the {role} of the song. Section-average loudness is "
                      f"{energy_label(section['energy'])} relative to the whole song; clip and phrase levels may vary.")
-            if active_beat.get("phase"):
-                notes += (f" Story Wheel: phase {active_beat['phase']}; starts {active_beat.get('starts') or 'unspecified'}; "
-                          f"turn {active_beat.get('turn') or 'unspecified'}; ends {active_beat.get('ends') or 'unspecified'}."
-                          + (f" Avoid resetting to {active_beat['avoid']}." if active_beat.get("avoid") else ""))
-            if role == "chorus":
-                notes += " Make it the most memorable part."
             action = ""
             story_action = active_beat.get("beat", "") if not insert else ""
             if story_action:
@@ -493,6 +489,7 @@ def plan_auto_shots(analysis: dict[str, Any], refs: list[dict[str, Any]], *, see
                 "_place": place,
                 "_section": section.get("orig", index + 1),  # original section number (motifs are keyed by it)
                 "_role": role,
+                "_section_energy": energy_label(section["energy"]),
                 "_action": action,
                 "_story_action": story_action,
                 "_location_evidence": (shot_location or {}).get("location_evidence"),
@@ -525,14 +522,10 @@ def plan_auto_shots(analysis: dict[str, Any], refs: list[dict[str, Any]], *, see
         previous_original = section["orig"]
 
     for number in {s["_section"] for s in shots}:
+        # Position among the production shots that carry the section's story action. The package writer resolves the
+        # section's entering state and destination per generated clip from these (clip_instructions.continuity_plan),
+        # because one production shot may be split into several clips.
         story_shots = [s for s in shots if s["_section"] == number and s["_story_action"]]
         for position, shot in enumerate(story_shots, 1):
-            shot["llm_notes"] += (
-                f" Section story progression: part {position} of {len(story_shots)}. "
-                "Develop the section intention across these parts; do not restart or reenact an accomplished beat. "
-                "Use prior action and ending state to decide what happens next, preserving the essential interaction."
-            )
-            wheel = shot.get("_story_wheel", {})
-            if wheel.get("ends") and position == len(story_shots):
-                shot["llm_notes"] += f" This is the final clip of the section: visibly arrive at {wheel['ends']}."
+            shot["_section_part"], shot["_section_parts"] = position, len(story_shots)
     return shots, why

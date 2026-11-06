@@ -5,7 +5,7 @@ import test from "node:test";
 import type { PlanData } from "./contracts";
 import {
   buildDirectorReport, clipsChangedSince, finalState, formatRanges, mp4Duration, outcomeFor, parseClipSelection, parseFinalizeReport,
-  reportFileName, requiredEventAllocation, stitchBlockers, stitchWorkflowValues, summarizeClips, wheelRanges, withContinuations,
+  eventMentioned, reportFileName, requiredEventAllocation, requiredEventStatuses, stitchBlockers, stitchWorkflowValues, summarizeClips, wheelRanges, withContinuations,
   type ReadinessInput, type ReportInput,
 } from "./results-rules";
 import { applyTemplateValues } from "./workflow-template";
@@ -176,12 +176,13 @@ test("director report: real decisions only", () => {
   assert.deepEqual(wheelRanges(PLAN), [{ phase: "Arrival", sections: "1" }, { phase: "Friction", sections: "2" }, { phase: "Release", sections: "3" }]);
   assert.equal(section("wheel").summary, "3 phases");
   assert.match(value("plan", "Plan cache") ?? "", /^HIT/);
-  assert.match(value("creative", "Required one-off event") ?? "", /placed in section 3/);
+  // no readable director context in this fixture: the older hook-based line is shown as such, never as verified
+  assert.match(value("creative", "Required one-off event") ?? "", /named in the hook for section 3 \(older report; prompt text and video not verified\)/);
   assert.match(value("locations", "Laundromat") ?? "", /supplied photo/);
   assert.match(value("locations", "Glass storefront corridor") ?? "", /image-backed — loaded glass-storefront-corridor\.png \(requested/);
   assert.equal(value("locations", "B-roll (text-only)"), "Rooftop");
   assert.match(value("locations", "Location evidence") ?? "", /1 from the evidence cache/);
-  assert.match(value("production", "Action validation") ?? "", /^1 valid, 1 repaired, 0 could not be repaired, 1 without a result/);
+  assert.match(value("production", "Action validation") ?? "", /^0 validated, 0 unverified, 1 repaired, 0 unresolved, 1 checked by an older package \(receipts not screened\), 1 without a result/);
   assert.match(value("production", "Candidate selection") ?? "", /Not part of this production path/);
   assert.match(value("render", "Render attempts") ?? "", /4 total · clips retried: 2/);
   assert.match(value("render", "ComfyUI cleanup after renders") ?? "", /4 completed its cleanup cycle/);
@@ -201,8 +202,9 @@ test("director report never claims a requested image was used unless the package
     .items.find((entry) => entry.label === "Glass storefront corridor")!;
   assert.match(none.value, /no line for it/);
   assert.deepEqual(requiredEventAllocation(["required event 'lightning strike': section(s) NOT ALLOCATED"]), { event: "lightning strike", sections: null });
+  // the old hook search said NOT ALLOCATED even when the event was allocated; that claim is no longer repeated
   const unallocated = buildDirectorReport({ ...input, package: { ...input.package!, polish: ["required event 'lightning strike': section(s) NOT ALLOCATED"] } });
-  assert.match(unallocated.sections.find((section) => section.id === "creative")!.items.find((entry) => entry.label === "Required one-off event")!.value, /NOT ALLOCATED/);
+  assert.doesNotMatch(unallocated.sections.find((section) => section.id === "creative")!.items.find((entry) => entry.label === "Required one-off event")!.value, /NOT ALLOCATED/);
   assert.equal(outcomeFor({ ...input, package: { ...input.package!, polish: [] } })?.requiredEvent, null);
 });
 
@@ -220,4 +222,37 @@ test("06-stitch-video.json: Finalize Video gets the saved render package; nothin
   assert.deepEqual(prompt.stitch_report.inputs.source, ["finalize", 1]);
   assert.deepEqual(prompt.status_json.inputs.source, ["status", 0]);
   assert.doesNotMatch(JSON.stringify(prompt), /{{/);
+});
+
+test("required event: allocation, prompt coverage, and unverified visuals are reported separately and follow revisions", () => {
+  const context = {
+    required_events: [{ id: "required-event-1", event: "a lightning strike", section: 3 }],
+    production_shots: [{ number: 1, required_events: [] }, { number: 2, required_events: [] }, { number: 3, required_events: [{ id: "required-event-1" }] }],
+  };
+  const segments = [{ index: 1, section: 1 }, { index: 2, section: 2 }, { index: 3, section: 3 }, { index: 4, section: 3 }];
+  const written = requiredEventStatuses(context, segments, (index) => (index === 4 ? "Lightning strikes the tower behind her." : "She keeps dancing."));
+  assert.deepEqual(written, [{ event: "a lightning strike", section: 3, clips: [3, 4], promptMentions: [4] }]);
+  const input = reportInput();
+  const report = buildDirectorReport({ ...input, package: { ...input.package!, requiredEvents: written } });
+  const item = report.sections.find((section) => section.id === "creative")!.items.find((entry) => entry.label === "Required one-off event")!;
+  assert.match(item.value, /allocated to section 3 \(clips 3.4\); the current prompt text names it in clip 4; the rendered video is not visually verified/);
+  assert.equal(item.tone, "ok");
+  // a later revision removed it from the prompt text: the report follows the current files, not the original hook
+  const revised = requiredEventStatuses(context, segments, () => "She keeps dancing.");
+  const stale = buildDirectorReport({ ...input, package: { ...input.package!, requiredEvents: revised } })
+    .sections.find((section) => section.id === "creative")!.items.find((entry) => entry.label === "Required one-off event")!;
+  assert.match(stale.value, /does not name it/);
+  assert.equal(stale.tone, "warn");
+  assert.deepEqual(outcomeFor({ ...input, package: { ...input.package!, requiredEvents: written } })?.requiredEvent, { event: "a lightning strike", sections: "3" });
+  assert.equal(eventMentioned("midnight downtown race", "racing lights streak past"), false);
+  assert.equal(eventMentioned("street race", "the street race begins"), true);
+});
+
+test("motif report names the frequency and whether surreal imagery was on", () => {
+  const input = reportInput();
+  const value = (surrealMotifs: boolean | null) => buildDirectorReport({ ...input, package: { ...input.package!, motifWeight: 0.5, surrealMotifs } })
+    .sections.find((section) => section.id === "creative")!.items.find((entry) => entry.label === "Recurring motif frequency")!.value;
+  assert.equal(value(false), "0.5 · grounded (surreal imagery off)");
+  assert.equal(value(true), "0.5 · surreal imagery on");
+  assert.equal(value(null), "0.5");
 });

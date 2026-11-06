@@ -42,7 +42,7 @@ export type ReadinessInput = {
   /** Clips in segments.json; null when it is missing or unreadable. */
   manifestClipCount: number | null;
   samePath(a: string, b: string): boolean;
-  busy: { kind: "package" | "render" | "stitch"; sameProject: boolean } | null;
+  busy: { kind: "package" | "render" | "stitch" | "postprocess"; sameProject: boolean } | null;
   packageWriting: boolean;
   clips: ReadinessClip[];
 };
@@ -77,6 +77,7 @@ export function stitchBlockers(input: ReadinessInput): string[] {
     if (!input.busy.sameProject) blockers.push("Another project is using ComfyUI right now. Stitch when it has finished.");
     else if (input.busy.kind === "render") blockers.push("Clips are still rendering on Produce. Stitch when the queue has finished.");
     else if (input.busy.kind === "package") blockers.push("A prompt package is being written. Wait for it to finish.");
+    else if (input.busy.kind === "postprocess") blockers.push("Clips are being post-processed. Stitch when the Post-processing queue has finished.");
   }
   if (input.renderPackageFolder === undefined) {
     blockers.push(`render_package.json is missing or unreadable in ${input.projectPath}. Write the prompt package again on Produce.`);
@@ -255,6 +256,10 @@ export type ReportInput = {
   package: {
     folder: string; clipCount: number; shotCount: number; writtenAt: string; motifWeight: number | null; warnings: string[]; polish: string[];
     resolveReport: string; isCurrent: boolean;
+    /** null = unknown (written before the setting existed and no direction was saved with it). */
+    surrealMotifs?: boolean | null;
+    /** From the package's director_context.json and its current prompt files; null when that file is unreadable. */
+    requiredEvents?: RequiredEventStatus[] | null;
   } | null;
   clipNotes: Record<string, string[]>;
   clips: Array<{ index: number; section: number | null; mode: string; location: string; outfit: string; status: string; attempts: number; error: string | null }>;
@@ -279,7 +284,43 @@ export function fileSize(bytes: number | null): string {
   return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
 }
 
-/** "required event 'lightning strike': section(s) 13" from Write Prompt Package's Polish lines. */
+/** A required event's canonical allocation and whether the current prompt text names it. The rendered video is never
+ *  checked, so visual fulfillment is always reported as unverified. */
+export type RequiredEventStatus = { event: string; section: number | null; clips: number[]; promptMentions: number[] };
+
+const EVENT_STOP = new Set(["the", "and", "with", "one", "scene", "moment", "shot", "time", "during", "where", "that", "this", "event", "single", "final", "big", "required"]);
+
+function eventStems(text: string): Set<string> {
+  const stem = (word: string) => {
+    for (const suffix of ["ing", "es", "ed", "er", "s", "e"]) if (word.length > suffix.length + 2 && word.endsWith(suffix)) return word.slice(0, -suffix.length).slice(0, 6);
+    return word.slice(0, 6);
+  };
+  return new Set((text.toLowerCase().match(/[a-z]+/g) ?? []).filter((word) => word.length > 2 && !EVENT_STOP.has(word)).map(stem));
+}
+
+/** Same rule as director_context.event_mentioned in the nodes: most of the event's content words appear in the text. */
+export function eventMentioned(event: string, text: string): boolean {
+  const wanted = eventStems(event);
+  if (!wanted.size) return false;
+  const found = eventStems(text);
+  const hits = [...wanted].filter((word) => found.has(word)).length;
+  return hits * 2 >= wanted.size + (wanted.size > 2 ? 1 : 0);
+}
+
+/** Allocation from director_context.json (production_shots[].required_events, keyed by shot number = segments.json's
+ *  section), prompt coverage from the current prompt files, so a later revision is reflected. */
+export function requiredEventStatuses(context: unknown, segments: Array<{ index: number; section: number }>, promptText: (index: number) => string): RequiredEventStatus[] {
+  const value = context as { required_events?: Array<{ id?: string; event?: string; section?: number }>; production_shots?: Array<{ number?: number; required_events?: Array<{ id?: string }> }> } | null;
+  if (!value || !Array.isArray(value.required_events)) return [];
+  return value.required_events.filter((event) => typeof event?.event === "string" && event.event.trim()).map((event) => {
+    const shots = (value.production_shots ?? []).filter((shot) => (shot.required_events ?? []).some((item) => item.id === event.id)).map((shot) => Number(shot.number));
+    const clips = segments.filter((segment) => shots.includes(segment.section)).map((segment) => segment.index);
+    return { event: String(event.event), section: typeof event.section === "number" ? event.section : null, clips, promptMentions: clips.filter((clip) => eventMentioned(String(event.event), promptText(clip))) };
+  });
+}
+
+/** Older packages: "required event 'lightning strike': section(s) 13" from Write Prompt Package's Polish lines. That
+ *  line searched optional hook text, so it is shown only when the package has no director context to read. */
 export function requiredEventAllocation(polish: string[]): { event: string; sections: string | null } | null {
   for (const line of polish) {
     const match = line.match(/^required event '(.+)': section\(s\) (.+)$/);
@@ -302,13 +343,15 @@ function performerClips(input: ReportInput) {
 
 export function outcomeFor(input: ReportInput): ResultsOutcome | null {
   if (!input.package) return null;
-  const event = requiredEventAllocation(input.package.polish);
+  const status = input.package.requiredEvents?.find((item) => item.clips.length);
+  const event = input.package.requiredEvents ? null : requiredEventAllocation(input.package.polish);
   return {
     clipsRendered: input.clips.filter((clip) => clip.status === "rendered").length,
     clipsTotal: input.clips.length,
     performerLocations: new Set(performerClips(input).map((clip) => key(clip.location))).size,
     outfits: new Set(input.clips.map((clip) => clip.outfit.trim()).filter(Boolean).map(key)).size,
-    requiredEvent: event?.sections ? { event: event.event, sections: event.sections } : null,
+    requiredEvent: status ? { event: status.event, sections: String(status.section ?? formatRanges(status.clips)) }
+      : event?.sections ? { event: event.event, sections: event.sections } : null,
   };
 }
 
@@ -379,16 +422,31 @@ export function buildDirectorReport(input: ReportInput): DirectorReport {
   const contract = plan?.creativeDirection ?? null;
   if (contract?.look) creative.push({ label: "Look", value: contract.look, tone: "ok" });
   if (contract?.motif) creative.push({ label: "Recurring motif", value: contract.motif, tone: "ok" });
-  const allocation = input.package ? requiredEventAllocation(input.package.polish) : null;
+  const statuses = input.package?.requiredEvents ?? null;
   if (contract?.event) {
-    if (allocation?.sections) creative.push({ label: "Required one-off event", value: `${contract.event} — placed in section ${allocation.sections}`, tone: "ok" });
-    else if (allocation) creative.push({ label: "Required one-off event", value: `${contract.event} — NOT ALLOCATED: the prompt writer did not place it in any section`, tone: "warn" });
-    else creative.push({ label: "Required one-off event", value: `${contract.event} — the prompt package did not report where it was placed`, tone: "none" });
+    const status = statuses?.find((item) => key(item.event) === key(contract.event)) ?? statuses?.[0];
+    if (status && status.clips.length) {
+      const where = `allocated to section ${status.section ?? "?"} (clip${status.clips.length === 1 ? "" : "s"} ${formatRanges(status.clips)})`;
+      const prompt = status.promptMentions.length
+        ? `the current prompt text names it in clip${status.promptMentions.length === 1 ? "" : "s"} ${formatRanges(status.promptMentions)}`
+        : "the current prompt text of those clips does not name it";
+      creative.push({ label: "Required one-off event", value: `${contract.event} — ${where}; ${prompt}; the rendered video is not visually verified`, tone: status.promptMentions.length ? "ok" : "warn" });
+    } else if (status) creative.push({ label: "Required one-off event", value: `${contract.event} — allocated to section ${status.section ?? "?"}, but no clip in this package carries it`, tone: "warn" });
+    else if (statuses) creative.push({ label: "Required one-off event", value: `${contract.event} — not allocated in this package's director context`, tone: "warn" });
+    else {
+      // No readable director context: fall back to the older Polish line, which only searched optional hook text.
+      const allocation = input.package ? requiredEventAllocation(input.package.polish) : null;
+      if (allocation?.sections) creative.push({ label: "Required one-off event", value: `${contract.event} — named in the hook for section ${allocation.sections} (older report; prompt text and video not verified)`, tone: "info" });
+      else creative.push({ label: "Required one-off event", value: `${contract.event} — the prompt package did not report where it was placed`, tone: "none" });
+    }
   }
+  // Section scene-type issues are already listed as planner warnings under Director plan.
+  for (const issue of (plan?.planningIssues ?? []).filter((item) => !item.startsWith("Section "))) creative.push({ label: "Planning issue", value: issue, tone: "warn" });
   const style = input.package?.polish.find((line) => line.startsWith("style ("));
   if (style) creative.push({ label: "Style pass", value: style, tone: "info" });
   if (input.package?.motifWeight !== null && input.package?.motifWeight !== undefined) {
-    creative.push({ label: "Surreal motif weight", value: String(input.package.motifWeight), tone: "info" });
+    const surreal = input.package.surrealMotifs;
+    creative.push({ label: "Recurring motif frequency", value: `${input.package.motifWeight}${surreal === true ? " · surreal imagery on" : surreal === false ? " · grounded (surreal imagery off)" : ""}`, tone: "info" });
   }
   if (!creative.length) creative.push({ label: "Creative direction", value: "No brief was given; the director chose the look", tone: "none" });
   sections.push({ id: "creative", title: "Creative direction", summary: contract ? [contract.look && "look", contract.motif && "motif", contract.event && "event"].filter(Boolean).join(" · ") : brief ? "Brief only" : "None given", items: creative });
@@ -448,13 +506,16 @@ export function buildDirectorReport(input: ReportInput): DirectorReport {
     const results = input.clips.map((clip) => actionValidation(input.clipNotes[String(clip.index)] ?? []).value);
     const count = (prefix: string) => results.filter((value) => value.startsWith(prefix)).length;
     const valid = count("Valid");
+    const unverified = count("Unverified");
     const repaired = count("Repaired");
     const unrepaired = count("Could not repair");
     const skipped = count("Skipped");
+    const legacy = count("Checked");
     const none = count("No result");
     prodItems.push({
-      label: "Action validation", tone: unrepaired || skipped ? "warn" : valid + repaired ? "ok" : "none",
-      value: `${valid} valid, ${repaired} repaired, ${unrepaired} could not be repaired${skipped ? `, ${skipped} skipped` : ""}${none ? `, ${none} without a result` : ""}`,
+      label: "Action validation", tone: unrepaired || skipped ? "warn" : unverified || legacy ? "info" : valid + repaired ? "ok" : "none",
+      value: `${valid} validated, ${unverified} unverified, ${repaired} repaired, ${unrepaired} unresolved${skipped ? `, ${skipped} skipped` : ""}`
+        + `${legacy ? `, ${legacy} checked by an older package (receipts not screened)` : ""}${none ? `, ${none} without a result` : ""}`,
     });
     prodItems.push({ label: "Prompt package", value: `Written ${when(input.package.writtenAt)} · ${input.package.folder}${input.package.isCurrent ? "" : " (not the current package)"}`, tone: "ok" });
     for (const warning of input.package.warnings.slice(0, 6)) prodItems.push({ label: "Package warning", value: warning, tone: "warn" });

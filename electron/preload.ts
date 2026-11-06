@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type {
   AssetChangeResult, AssetRole, ClipDetail, ClipRevisionRequest, CreativeDirection, SectionActionImpact, LocationPlaceResult, LocationsOverview, PlanOverview, ProduceOverview, ProjectDetail,
-  ProjectsOverview, RerenderRequest, RerenderResult, ResultsOverview, LivePreviewSession, LivePreviewFrame, SongTimeline, TimelineDraft, TimelineSaveImpact,
+  ProjectsOverview, PostProcessOverview, PostSelectRequest, PostSettingsRequest, PostWorkerInfo, RerenderRequest, RerenderResult, ResultsOverview, LivePreviewSession, LivePreviewFrame, SongTimeline, TimelineDraft, TimelineSaveImpact,
 } from "./contracts";
 import type { MachineSettings } from "./db";
 
@@ -153,6 +153,22 @@ contextBridge.exposeInMainWorld("martini", {
       const handler = (_event: Electron.IpcRendererEvent, projectId: string) => listener(projectId);
       ipcRenderer.on("martini:results-changed", handler);
       return () => ipcRenderer.removeListener("martini:results-changed", handler);
+    },
+  },
+  post: {
+    /** Clips of the current package with their post-processing settings, attempts, and how the stitch will use each. */
+    overview: (projectId: string): Promise<PostProcessOverview> => ipcRenderer.invoke("martini:post-overview", projectId),
+    saveSettings: (projectId: string, request: PostSettingsRequest): Promise<PostProcessOverview> => ipcRenderer.invoke("martini:post-save-settings", projectId, request),
+    /** Original (bypass), a processed attempt, or clear (automatic) for the final stitch. */
+    select: (projectId: string, request: PostSelectRequest): Promise<PostProcessOverview> => ipcRenderer.invoke("martini:post-select", projectId, request),
+    /** Queues clips (numbers) or "pending" (every enabled clip without a current result) in the background. */
+    process: (projectId: string, clips: number[] | "pending"): Promise<PostProcessOverview> => ipcRenderer.invoke("martini:post-process", projectId, clips),
+    cancel: (projectId: string): Promise<PostProcessOverview> => ipcRenderer.invoke("martini:post-cancel", projectId),
+    workerInfo: (): Promise<PostWorkerInfo> => ipcRenderer.invoke("martini:post-worker-info"),
+    onChanged: (listener: (projectId: string) => void): (() => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, projectId: string) => listener(projectId);
+      ipcRenderer.on("martini:post-changed", handler);
+      return () => ipcRenderer.removeListener("martini:post-changed", handler);
     },
   },
   directorLlmOptions: (): Promise<{ options: string[]; selected: string | null; error: string | null }> => ipcRenderer.invoke("martini:director-llm-options"),

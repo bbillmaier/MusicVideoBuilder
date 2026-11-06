@@ -24,7 +24,14 @@ export function remotePackageRoot(slug: string, packageFolder: string, localProj
   return safeRemotePath(`${slug}/${relative}`);
 }
 
-type RemoteEntry = { size: number; mtimeMs: number | null };
+/** The render package as a remote worker's ComfyUI must receive it: the local render_package.json holds a local absolute
+ *  folder, while the worker reads the staged mirror at output/martini_shot/<slug>/... Never write this back to disk. */
+export function remoteRenderPackage(renderPackage: Record<string, unknown>, slug: string, localProjectRoot: string): Record<string, unknown> {
+  if (typeof renderPackage.folder !== "string") throw new Error("render_package.json has no package folder.");
+  return { ...renderPackage, folder: `martini_shot/${remotePackageRoot(slug, renderPackage.folder, localProjectRoot)}` };
+}
+
+type RemoteEntry ={ size: number; mtimeMs: number | null };
 /** Files this app session has proved identical on a worker (by hash), keyed by endpoint and remote path. A file is
  *  trusted again only while both copies keep exactly the size and modified time seen then; a new pod, an edit on either
  *  side, or an app restart means a fresh check. */
@@ -162,6 +169,17 @@ export class RemoteRenderStaging {
     };
     await visit(remoteRoot); return { downloaded, bytesDownloaded };
   }
+}
+
+/** A file path a remote node reported (e.g. /workspace/ComfyUI/output/martini_shot/<slug>/render-01/final.mp4) as the
+ *  local file synchronizeProject copied it to. It must lie inside the mirrored package folder. */
+export function remoteReportedPath(slug: string, localProjectRoot: string, packageFolder: string, reported: string): string {
+  const posix = "/" + reported.trim().replace(/\\/g, "/"); // absolute, or relative to ComfyUI's output folder
+  const at = posix.lastIndexOf(`/martini_shot/${slug}/`);
+  if (at < 0) throw new Error(`The remote worker reported ${reported}, which is not in this project's staged folder.`);
+  const relative = posix.slice(at + 1);
+  const slash = relative.lastIndexOf("/");
+  return remoteOutputPath(slug, localProjectRoot, packageFolder, relative.slice(0, slash), relative.slice(slash + 1)).local;
 }
 
 /** SaveVideo may only point inside this one mirrored package, never arbitrary output. */

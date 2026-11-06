@@ -28,7 +28,7 @@ from .dance_writer import (
     style_names,
     wind_down_warning,
 )
-from .action_validation import parse_requirements, repair_message, validate_requirements
+from .clip_instructions import build_card, continuity_plan, location_label
 from .location_evidence import parse_evidence_text
 from .h3_prompt import _clean, _sentence
 from .lyrics_align import (
@@ -46,13 +46,17 @@ from .mv_plan import FPS, SCENE_TYPES, TRANSITIONS, detect_beats, draw_timeline,
 from .music_energy import energy_reference
 from .mv_writer import (
     AUTO,
+    CARD_HEADER,
     INHERIT,
     LLM_CAMERA,
+    before_output_format,
     build_clip_message,
+    check_and_repair,
     clip_context,
     compose_clip_prompt,
+    current_card,
+    evaluate_clip,
     labels_text,
-    parse_clip_response,
     system_prompt,
     word_range,
 )
@@ -563,53 +567,41 @@ class MiniMaxH3MusicVideoDirector:
                 "Consider New angle or Continue for this shot." if same_set and clip["transition"] == "Hard cut" else ""
             )
             ask_signature = scene == "Dance" and chorus and not signature
+            # Section intent, shot intent, and clip handoff are resolved here, after the shot was split into clips,
+            # so an intermediate clip never gets both a section entrance and a section destination.
+            plan = continuity_plan(shot, clip, total_clips=len(clips),
+                                   previous_ending=history[-1].get("ending", "") if history else "")
+            location_ref = next((r for r in refs if r["role"] == "location"), None)
+            evidence = shot.get("_location_evidence") or parse_evidence_text(shot.get("llm_notes", ""))
+            card = build_card(
+                shot, plan, scene=scene, duration=clip_seconds, music_role=shot.get("_role", ""),
+                loudness=clip["energy"], camera_sentence=camera_sentence, has_person=any(r["role"] == "person" for r in refs),
+                location_line=location_label(shot.get("_place", ""), _clean(shot.get("location_description")), evidence,
+                                             f"<Subject {location_ref['subject']}>" if location_ref else "",
+                                             plan["joined"]),
+            )
             message = build_clip_message(
-                scene_type=scene, labels=labels_text(refs, subject_description, pronoun),
-                scene_description=shot.get("scene_description", ""),
-                llm_notes=(shot.get("_director_context_card", "") + "\n" + shot.get("llm_notes", "")).strip() + (f" Visual style of the whole video: {shot['style_bible']}"
-                                                       if shot.get("style_bible") else ""),
+                scene_type=scene, labels=labels_text(refs, subject_description, pronoun), card=card,
                 style_seed=styles.get(shot["style"]), style_name=shot["style"],
-                location_text=_clean(shot.get("location_description")),
-                has_location_label=any(r["role"] == "location" for r in refs),
                 analysis=analysis, beat_timeline=beat_timeline, context=context,
-                lookahead="" if is_last else lookahead_instruction(clip_seconds, clips[position + 1]["energy"]),
+                lookahead="" if is_last else lookahead_instruction(clip_seconds, clips[position + 1]["energy"], plan["arrival"]),
                 lyrics_block=lyric_block, lip_sync=lip_sync, ask_signature=ask_signature,
                 signature=signature if scene == "Dance" and chorus else "",
                 ask_camera=ask_camera,
                 previous_camera=previous_camera if clip["transition"] == "New angle" or same_set else "",
                 ask_soundscape=scene != "Dance", image_notes=image_notes, music_description=music_note,
-                camera_sentence=camera_sentence, energy_contrast=shot.get("energy_contrast", ""),
-                ask_requirements=validate_actions,
+                energy_contrast=shot.get("energy_contrast", ""), ask_requirements=validate_actions,
             )
             response = run_llm(llm, message, image_kwargs, temperature, max_tokens, seed + clip["index"] - 1,
                                system_prompt(scene))
-            parsed, warnings = parse_clip_response(response, scene)
-            if validate_actions:
-                requirements = parse_requirements(parsed["requirements"])
-                if not parsed["requirements"]:
-                    warnings.append("NOTE: action validation skipped; the LLM returned no REQUIREMENTS receipt.")
-                    conflicts, unknowns = [], []
-                else:
-                    summary = ", ".join(f"{key}={value}" for key, value in requirements.items() if value)
-                    warnings.append("NOTE: action validation checked " + (summary or "no declared requirements") + ".")
-                    conflicts, unknowns = validate_requirements(requirements, parse_evidence_text(shot.get("llm_notes", "")),
-                                                                history[-1] if history else None, clip["transition"])
-                    warnings += ["NOTE: " + note for note in unknowns]
-                if conflicts:
-                    repaired = run_llm(llm, repair_message(message, response, conflicts), image_kwargs, temperature,
-                                       max_tokens, seed + clip["index"] + 100000, system_prompt(scene))
-                    repaired_parsed, repaired_warnings = parse_clip_response(repaired, scene)
-                    repaired_requirements = parse_requirements(repaired_parsed["requirements"])
-                    remaining, repaired_unknowns = validate_requirements(
-                        repaired_requirements, parse_evidence_text(shot.get("llm_notes", "")),
-                        history[-1] if history else None, clip["transition"])
-                    if not remaining:
-                        response, parsed, requirements = repaired, repaired_parsed, repaired_requirements
-                        warnings += ["NOTE: repaired action validation: " + note for note in conflicts]
-                        warnings += repaired_warnings + ["NOTE: " + note for note in repaired_unknowns]
-                    else:
-                        warnings += ["WARNING: action validation could not repair: " + note for note in remaining]
-                parsed["requirements"] = requirements
+            intention = _clean(shot.get("scene_description"))
+            check = lambda candidate: evaluate_clip(
+                candidate, clip_seconds=clip_seconds, transition=clip["transition"], end_mode=plan["end_mode"],
+                intention=intention, evidence=evidence, previous=history[-1] if history else None,
+                check_receipt=validate_actions, scene=scene)
+            response, parsed, warnings, validation = check_and_repair(
+                run_llm, llm, message, response, scene, image_kwargs, temperature, max_tokens, seed + clip["index"] + 100000,
+                check, validate_actions)
             if jump_cut_warning:
                 warnings.append(jump_cut_warning)
 
@@ -697,6 +689,13 @@ class MiniMaxH3MusicVideoDirector:
                 "lip_sync_option": (lip_sync_paragraph(phrases, _clean(lyrics_language) or "English")
                                     if phrases and scene != "B-roll" else ""),
                 "validate_actions": bool(validate_actions),
+                # what a later take needs to run the same checks as the package writer
+                "location_evidence": evidence or {},
+                "end_mode": plan["end_mode"],
+                "arrival": plan["arrival"],
+                "intention": intention,
+                "validation": ("unresolved" if validation["conflicts"] else "unverified" if validation["unknowns"]
+                               or not validation["receipt"] else "validated") if validate_actions else "off",
             }
             creative_file.write_text(json.dumps({str(key): value for key, value in sorted(creatives.items())}, indent=2), encoding="utf-8")
             prompts.append(f"===== segment_{clip['number']} (shot {section['number']}, {scene}) =====\n{prompt}")
@@ -790,7 +789,10 @@ def _current_message(base: str, record: dict[str, Any]) -> str:
     paragraphs: list[str] = []
     for para in base.split("\n\n"):
         match = _INTENTION_RE.match(para) if intention else None
-        if match:
+        if para.startswith(CARD_HEADER):  # packages written with the clip card
+            para, old = current_card(para, record, notes, intention)
+            old_intention = old_intention or old
+        elif match:
             old_intention = match.group(1).rstrip(".")
             para = para[:match.start(1)] + intention + para[match.end(1):]
         elif para.startswith(_CAMERA_PREFIX) and "camera" in notes:
@@ -1003,48 +1005,44 @@ class MiniMaxH3MusicVideoPromptRevision:
         if take:
             base = _base_message(record)
             record["base_message"] = base
-            message = _current_message(base, record) + "\n\n" + REVISION_REQUEST
+            extra_parts = [REVISION_REQUEST]
             if record.get("producer_notes"):
-                message += "\n\nPRODUCER CHANGES (these override anything above):\n" + "\n".join(
-                    f"- {note}" for note in record["producer_notes"].values())
+                extra_parts.append("PRODUCER CHANGES (these override anything above):\n" + "\n".join(
+                    f"- {note}" for note in record["producer_notes"].values()))
             direction = _clean(creative_text)
             if direction:
-                message += f"\n\nPRODUCER DIRECTION for this take (follow it closely): {direction}"
+                extra_parts.append(f"PRODUCER DIRECTION for this take (follow it closely): {direction}")
                 done.append(f"direction: {direction}")
             extra = ([CAMERA_HEADER] if record.get("ask_camera") and "\nCAMERA:" not in base else []) + (
                 [SOUNDSCAPE_HEADER] if record["scene"] != "Dance" and "\nSOUNDSCAPE:" not in base else [])
             if extra:
-                message += "\n\nAlso include these headers after ACTION:\n" + "\n".join(extra)
+                extra_parts.append("Also include these headers after ACTION:\n" + "\n".join(extra))
             if record["scene"] == "Dance" and "words of choreography" not in base:
                 # packages written before the Dance word range asked for at most ~14 words a second; overrule that
                 least, most = word_range("Dance", float(record.get("clip_seconds", 0.0)) or 8.0)
-                message += (f"\n\nLENGTH (overrides any word limit above): write between {least} and {most} words of "
-                            "choreography, a sequence of specific named moves in every phrase: which side and limb, "
-                            "direction, level, and timing, with arms, hands, feet, hips, torso, head, and gaze.")
+                extra_parts.append(f"LENGTH (overrides any word limit above): write between {least} and {most} words of "
+                                   "choreography, a sequence of specific named moves in every phrase: which side and limb, "
+                                   "direction, level, and timing, with arms, hands, feet, hips, torso, head, and gaze.")
+            message = before_output_format(_current_message(base, record), extra_parts)
             refs = _creative_refs(path, record)
             image_kwargs, _image_notes = _prepare_llm_images(llm, refs, True)
             run_seed = int(seed) + index + int(record.get("revision", 0)) * 1009
             response = run_llm(llm, message, image_kwargs, temperature, max_tokens, run_seed, system_prompt(record["scene"]))
-            parsed, warnings = parse_clip_response(response, record["scene"])
-            if record.get("validate_actions") and parsed["requirements"]:
-                # the same check the package writer runs, with one repair attempt
-                evidence = parse_evidence_text(record.get("llm_notes", ""))
-                requirements = parse_requirements(parsed["requirements"])
-                conflicts, unknowns = validate_requirements(requirements, evidence, states.get(index - 1), record["transition"])
-                warnings += ["NOTE: " + note for note in unknowns]
-                if conflicts:
-                    repaired = run_llm(llm, repair_message(message, response, conflicts), image_kwargs, temperature,
-                                       max_tokens, run_seed + 100000, system_prompt(record["scene"]))
-                    repaired_parsed, repaired_warnings = parse_clip_response(repaired, record["scene"])
-                    repaired_requirements = parse_requirements(repaired_parsed["requirements"])
-                    remaining, _unknowns = validate_requirements(repaired_requirements, evidence, states.get(index - 1),
-                                                                 record["transition"])
-                    if not remaining:
-                        response, parsed, requirements = repaired, repaired_parsed, repaired_requirements
-                        warnings += ["NOTE: repaired action validation: " + note for note in conflicts] + repaired_warnings
-                    else:
-                        warnings += ["WARNING: action validation could not repair: " + note for note in remaining]
-                parsed["requirements"] = requirements
+            # The same checks the package writer runs, with at most one repair. A user-authored ending is respected,
+            # so the stop check is skipped for it (and for records written before end modes were saved).
+            validate = bool(record.get("validate_actions"))
+            check = lambda candidate: evaluate_clip(
+                candidate, clip_seconds=float(record.get("clip_seconds", 0.0)), transition=record["transition"],
+                end_mode=None if record.get("ending_override") else record.get("end_mode"),
+                intention=_clean(record.get("intention_override")) or record.get("intention", ""),
+                evidence=record.get("location_evidence") or parse_evidence_text(record.get("llm_notes", "")),
+                previous=states.get(index - 1), check_receipt=validate, scene=record["scene"])
+            response, parsed, warnings, validation = check_and_repair(
+                run_llm, llm, message, response, record["scene"], image_kwargs, temperature, max_tokens, run_seed + 100000,
+                check, validate)
+            if validate:
+                record["validation"] = ("unresolved" if validation["conflicts"] else "unverified"
+                                        if validation["unknowns"] or not validation["receipt"] else "validated")
             action, next_plan = split_lookahead(parsed["action"], float(record.get("clip_seconds", 0.0)))
             if record.get("ask_camera"):
                 record["camera_sentence"] = (_sentence(parsed["camera"]) if parsed.get("camera")

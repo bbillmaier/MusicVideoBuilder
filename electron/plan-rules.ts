@@ -18,13 +18,19 @@ export const DEFAULT_RENDER_STEPS = 8;
 export const MAX_RENDER_STEPS = 100;
 
 export const DEFAULT_DIRECTION: CreativeDirection = {
-  creativeBrief: "", storyWheel: true, minLocations: 0, requestLocationImages: true, motifWeight: 0,
+  creativeBrief: "", storyWheel: true, minLocations: 0, requestLocationImages: true, motifWeight: 0, surrealMotifs: false,
   danceStyle: "K-Pop", targetShotSeconds: 8, minShotSeconds: 3, maxShotSeconds: 10,
   cutRateVsEnergy: 0.5, brollAmount: 0.3, performanceVsDance: 0.4, freeformAmount: 0,
   locationVariety: 0.5, chorusConsistency: true, outfitChangeRate: 0.3, continueBias: 0.5,
   hardCutsChangeLocation: true, lipSync: false,
   aspectRatio: "4:3", renderMegapixels: 1, renderSteps: DEFAULT_RENDER_STEPS,
 };
+
+/** Whether recurring motifs may be surreal. Direction saved before the separate switch existed has no value; its motif
+ *  slider then asked for surreal imagery, so a weight above 0 keeps meaning surreal for it. */
+export function surrealSetting(direction: Pick<CreativeDirection, "motifWeight"> & { surrealMotifs?: boolean }): boolean {
+  return typeof direction.surrealMotifs === "boolean" ? direction.surrealMotifs : direction.motifWeight > 0;
+}
 
 /** Validates direction input from the renderer. Throws a readable error for anything malformed. */
 export function validateDirection(raw: unknown): CreativeDirection {
@@ -43,7 +49,7 @@ export function validateDirection(raw: unknown): CreativeDirection {
     throw new Error(`Minimum performer locations must be a whole number from 0 to ${MAX_MIN_LOCATIONS}.`);
   }
   const weight = value.motifWeight;
-  if (typeof weight !== "number" || !Number.isFinite(weight) || weight < 0 || weight > 1) throw new Error("Surreal motif weight must be between 0 and 1.");
+  if (typeof weight !== "number" || !Number.isFinite(weight) || weight < 0 || weight > 1) throw new Error("Recurring motif frequency must be between 0 and 1.");
   const controls = { ...DEFAULT_DIRECTION, ...value } as CreativeDirection;
   const shotSeconds = (key: "targetShotSeconds" | "minShotSeconds" | "maxShotSeconds", min: number, max: number): number => {
     const number = controls[key];
@@ -61,14 +67,14 @@ export function validateDirection(raw: unknown): CreativeDirection {
   if (typeof controls.renderSteps !== "number" || !Number.isInteger(controls.renderSteps) || controls.renderSteps < 1 || controls.renderSteps > MAX_RENDER_STEPS) {
     throw new Error(`Steps must be a whole number from 1 to ${MAX_RENDER_STEPS}.`);
   }
-  for (const key of ["chorusConsistency", "hardCutsChangeLocation", "lipSync"] as const) if (typeof controls[key] !== "boolean") throw new Error(`${key} must be on or off.`);
+  for (const key of ["chorusConsistency", "hardCutsChangeLocation", "lipSync", "surrealMotifs"] as const) if (typeof controls[key] !== "boolean") throw new Error(`${key} must be on or off.`);
   const targetShotSeconds = shotSeconds("targetShotSeconds", 2, 30);
   const minShotSeconds = shotSeconds("minShotSeconds", 1, 15);
   const maxShotSeconds = shotSeconds("maxShotSeconds", 0, 120);
   if (minShotSeconds > targetShotSeconds || (maxShotSeconds > 0 && targetShotSeconds > maxShotSeconds)) throw new Error("Clip lengths must be minimum ≤ desired ≤ maximum (or set maximum to 0 for no cap).");
   return {
     creativeBrief, storyWheel: value.storyWheel, minLocations: min, requestLocationImages: value.requestLocationImages,
-    motifWeight: Math.round(weight * 20) / 20,
+    motifWeight: Math.round(weight * 20) / 20, surrealMotifs: controls.surrealMotifs,
     danceStyle: controls.danceStyle.trim(), targetShotSeconds, minShotSeconds, maxShotSeconds,
     cutRateVsEnergy: dial("cutRateVsEnergy"), brollAmount: dial("brollAmount"), performanceVsDance: dial("performanceVsDance"),
     freeformAmount: dial("freeformAmount"), locationVariety: dial("locationVariety"), chorusConsistency: controls.chorusConsistency,
@@ -297,6 +303,11 @@ export function parseCreativeDirection(value: unknown): PlanData["creativeDirect
   return contract.look || contract.motif || contract.event ? contract : null;
 }
 
+function planningIssues(context: unknown): string[] {
+  const issues = (context as { planning_issues?: unknown } | null)?.planning_issues;
+  return Array.isArray(issues) ? issues.map(text).filter(Boolean) : [];
+}
+
 /** Turns a story_plan.json written by MartiniShotPlanStory into the app's read-only plan model. */
 export function parseStoryPlan(raw: RawStoryPlan, options: { projectPath: string; suppliedLocations: string[]; report: string }): PlanData {
   const analysis = raw.analysis;
@@ -363,6 +374,7 @@ export function parseStoryPlan(raw: RawStoryPlan, options: { projectPath: string
     creativeDirection: parseCreativeDirection(raw.creative_direction), seed: num(settings.seed) ?? 0,
     minLocations: num(settings.min_locations) ?? 0, requestLocationImages: requestEnabled, performerLocations, requestedLocations,
     suppliedLocations: options.suppliedLocations, warnings: reportWarnings(options.report),
+    planningIssues: planningIssues(raw.director_context),
     rulesOnly: !Object.keys(story).length,
   };
 }

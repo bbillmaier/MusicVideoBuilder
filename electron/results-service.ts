@@ -14,9 +14,11 @@ import {
   ComfyWorkflowError, comfyHistory, comfyQueueIds, comfyStatus, freeComfyMemory, runWorkflowTemplate, serializeComfyWork,
   type CleanupEvidence, type WorkflowProgress,
 } from "./comfy-client";
-import { db } from "./db";
+import { db, getMachineSettings } from "./db";
+import { remoteRenderPackage, remoteReportedPath } from "./remote-render-staging";
+import { stitchSelection, type StitchSelection } from "./postprocess-service";
 import { locationsOverview } from "./location-service";
-import { previewText } from "./plan-rules";
+import { previewText, surrealSetting } from "./plan-rules";
 import { planOverview, planRunById } from "./plan-service";
 import { claimProduction, productionBusy } from "./production-lock";
 import { parseManifest, readableProductionError } from "./production-rules";
@@ -28,7 +30,7 @@ import { getProject, projectIdentity } from "./project-service";
 import { isInside } from "./project-rules";
 import {
   buildDirectorReport, clipsChangedSince, finalState, mp4Duration, outcomeFor, parseFinalizeReport, reportFileName, stitchBlockers,
-  stitchWorkflowValues, summarizeClips, type ReportInput, type SummaryClip,
+  requiredEventStatuses, stitchWorkflowValues, summarizeClips, type ReportInput, type RequiredEventStatus, type SummaryClip,
 } from "./results-rules";
 
 type FinalRow = {
@@ -36,7 +38,7 @@ type FinalRow = {
   prompt_id: string | null; video_path: string | null; output_folder: string | null; file_size: number | null; duration_seconds: number | null;
   video_info: string | null; stitch_report: string | null; project_status: string | null; clip_summary: string | null; cleanup_status: CleanupState;
   cleanup: string | null; report_data: string | null; report_body: string | null; report_path: string | null; error: string | null;
-  started_at: string; submitted_at: string | null; completed_at: string | null;
+  started_at: string; submitted_at: string | null; completed_at: string | null; clip_selection?: string | null;
 };
 type StoredSummary = ReturnType<typeof summarizeClips>;
 type StoredReport = { report: DirectorReport; outcome: ResultsOutcome | null };
@@ -91,8 +93,11 @@ function verifiedVideo(row: FinalRow, projectPath: string): string | null {
   return existsSync(row.video_path) ? path.resolve(row.video_path) : null;
 }
 
-function summaryClips(rows: ClipRow[]): SummaryClip[] {
-  return rows.map((row) => ({ index: row.clip_index, status: row.status, attempts: row.attempts, outputPath: row.output_path }));
+/** With a post-processing selection, each clip's output is the file the stitch joins (original or processed), so changing a
+ *  selection shows as "clips changed since" the last final video. */
+function summaryClips(rows: ClipRow[], selection?: Pick<StitchSelection, "files"> | null): SummaryClip[] {
+  const chosen = new Map((selection?.files ?? []).map((file) => [file.index, file.absolute]));
+  return rows.map((row) => ({ index: row.clip_index, status: row.status, attempts: row.attempts, outputPath: chosen.get(row.clip_index) ?? row.output_path }));
 }
 
 function toFinal(row: FinalRow, projectPath: string, currentPackageId: string | null, currentClips: SummaryClip[]): FinalVideo {
@@ -145,10 +150,27 @@ async function readiness(projectId: string) {
     packageWriting: packageWriting(project.id),
     clips: rows.map((row) => ({ index: row.clip_index, status: row.status, error: row.error, attempts: row.attempts })),
   });
-  return { project, pkgRow, pkg, rows, renderPackage, blockers };
+  // Enabled post-processing must resolve to a current processed file or an explicit original before anything is joined.
+  const selection = pkgRow ? await stitchSelection(project.id) : null;
+  if (selection) blockers.push(...selection.unresolved.slice(0, 12), ...(selection.unresolved.length > 12 ? [`…and ${selection.unresolved.length - 12} more clips on Post-processing.`] : []));
+  return { project, pkgRow, pkg, rows, renderPackage, blockers, selection };
 }
 
 // ----- Report input -----------------------------------------------------------------------------------------
+
+/** Required-event allocation from the package's director_context.json, with prompt coverage read from the current prompt
+ *  files (so a revised clip is reflected). null when the package has no readable director context. */
+async function packageEvents(folder: string): Promise<RequiredEventStatus[] | null> {
+  try {
+    const context = JSON.parse(await fs.readFile(path.join(folder, "director_context.json"), "utf-8")) as unknown;
+    const segments = parseManifest(JSON.parse(await fs.readFile(path.join(folder, "segments.json"), "utf-8"))).segments;
+    const prompts = new Map<number, string>();
+    for (const segment of segments) prompts.set(segment.index, await fs.readFile(path.join(folder, segment.promptFile), "utf-8").catch(() => ""));
+    return requiredEventStatuses(context, segments, (index) => prompts.get(index) ?? "");
+  } catch {
+    return null;
+  }
+}
 
 async function reportInput(projectId: string, pkgRow: PackageRow | null, stitch: FinalRow | null, kind: DirectorReport["kind"]): Promise<ReportInput> {
   const project = getProject(projectId);
@@ -176,6 +198,7 @@ async function reportInput(projectId: string, pkgRow: PackageRow | null, stitch:
     package: pkgRow && stored ? {
       folder: stored.folder, clipCount: stored.clipCount, shotCount: stored.shotCount, writtenAt: pkgRow.completed_at ?? pkgRow.created_at,
       motifWeight: settings?.motifWeight ?? null, warnings: stored.warnings, polish: stored.polish, resolveReport: stored.reports.resolve,
+      surrealMotifs: settings?.direction ? surrealSetting(settings.direction) : null, requiredEvents: await packageEvents(stored.folder),
       isCurrent: currentPackageRow(project.id)?.id === pkgRow.id,
     } : null,
     clipNotes: stored?.clipNotes ?? {},
@@ -196,11 +219,11 @@ async function reportInput(projectId: string, pkgRow: PackageRow | null, stitch:
 
 export async function resultsOverview(projectId: unknown): Promise<ResultsOverview> {
   const ready = await readiness(projectIdentity(projectId).id);
-  const { project, pkgRow, pkg, rows, blockers } = ready;
+  const { project, pkgRow, pkg, rows, blockers, selection } = ready;
   const comfy = await comfyStatus();
   const plans = await planOverview(project.id);
   const settings = parseJson<PackageSettings>(pkgRow?.settings);
-  const current = summaryClips(rows);
+  const current = summaryClips(rows, selection);
   const all = finalRows(project.id);
   const finals = all.map((row) => toFinal(row, project.projectPath, pkgRow?.id ?? null, current));
   const latestIndex = pkgRow ? all.findIndex((row) => row.package_run_id === pkgRow.id) : -1;
@@ -216,6 +239,7 @@ export async function resultsOverview(projectId: unknown): Promise<ResultsOvervi
   if (stale) notes.push("This prompt package was written from an earlier director plan. A stitch uses its clips and tells that earlier story; the report says so.");
   if (latest?.status === "complete" && latest.clipsChangedSince) notes.push(`Clips changed after ${latest.fileName ?? "the last video"} was stitched. Stitch again to include them; the earlier video is kept.`);
   if (latest?.status === "complete" && !latest.fileExists) notes.push(`${latest.videoPath ?? "The recorded final video"} is no longer on disk. Its record and report are kept; stitch again to make a new file.`);
+  if (selection?.usesProcessed) notes.push(`Stitching uses post-processed versions of clip${selection.files.filter((file) => file.processed).length === 1 ? "" : "s"} ${selection.files.filter((file) => file.processed).map((file) => file.index).join(", ")} (Post-processing). Mixed sizes are normalized to the largest clip.`);
   if (shown && !shown.packageCurrent) notes.push(`The video shown was made from an earlier prompt package (${shown.fileName}). It stays available below.`);
 
   const stitchUnavailable = !comfy.connected
@@ -255,7 +279,7 @@ export async function resultsOverview(projectId: unknown): Promise<ResultsOvervi
   let rerenderReason: string | null = null;
   if (!pkg) rerenderReason = "There is no prompt package to re-render.";
   else if (stale) rerenderReason = "The director plan changed after this package was written, so it is no longer the unchanged plan. Write a new prompt package on Produce.";
-  else if (busy) rerenderReason = busy.kind === "stitch" ? "The final video is being stitched." : busy.kind === "render" ? "Clips are already rendering." : "A prompt package is being written.";
+  else if (busy) rerenderReason = busy.kind === "stitch" ? "The final video is being stitched." : busy.kind === "render" ? "Clips are already rendering." : busy.kind === "postprocess" ? "Clips are being post-processed." : "A prompt package is being written.";
   else if (!comfy.connected) rerenderReason = "ComfyUI is not reachable.";
   let rerollReason: string | null = plans.blockers[0] ?? null;
   if (!plans.plan) rerollReason = "There is no director plan yet. Create one on the Plan page.";
@@ -335,7 +359,7 @@ async function recoverInterrupted(projectId: string, pkgRow: PackageRow): Promis
       continue;
     }
     try {
-      await recordVideo(row.id, projectId, pkgRow, history.outputs, new Set());
+      await recordVideo(row.id, projectId, pkgRow, history.outputs, new Set(), parseJson<Pick<StitchSelection, "files">>(row.clip_selection ?? null));
       update(row.id, { error: "Finished in ComfyUI while Martini Shot was closed.", cleanup_status: "not_requested" });
       recovered = true;
     } catch (error) {
@@ -369,7 +393,7 @@ function readDuration(file: string): number | null {
 }
 
 /** Checks ComfyUI's result and stores the final video, its metadata, the clip summary, and the report snapshot. */
-async function recordVideo(finalId: string, projectId: string, pkgRow: PackageRow, outputs: unknown, before: Set<string>): Promise<void> {
+async function recordVideo(finalId: string, projectId: string, pkgRow: PackageRow, outputs: unknown, before: Set<string>, selection: Pick<StitchSelection, "files"> | null = null): Promise<void> {
   const project = projectIdentity(projectId);
   const pkg = toPackage(pkgRow);
   if (!pkg) throw new Error("The prompt package record is unreadable.");
@@ -379,7 +403,9 @@ async function recordVideo(finalId: string, projectId: string, pkgRow: PackageRo
   update(finalId, { stitch_report: stitchReport, project_status: projectStatus });
   if (!stitchReport || !videoText) throw new Error("ComfyUI finished, but Finalize Video's video path or report was not in its results.");
   const parsed = parseFinalizeReport(stitchReport);
-  const video = path.resolve(videoText);
+  // A remote worker reports its own path; the file itself was copied into the local package after the run.
+  const remote = (await getMachineSettings()).executionDestination === "remote";
+  const video = remote ? remoteReportedPath(project.slug, project.projectPath, pkg.folder, videoText) : path.resolve(videoText);
   if (parsed.partial) {
     update(finalId, { video_path: video, output_folder: path.dirname(video) });
     throw new Error(`Finalize Video made a partial test stitch instead of the full video: ${parsed.partial} The partial file is ${video}.`);
@@ -396,7 +422,7 @@ async function recordVideo(finalId: string, projectId: string, pkgRow: PackageRo
   const at = now();
   update(finalId, {
     status: "complete", video_path: video, output_folder: pkg.folder, file_size: size, duration_seconds: duration, video_info: parsed.info,
-    clip_summary: JSON.stringify(summarizeClips(summaryClips(rows))), completed_at: at, error: null,
+    clip_summary: JSON.stringify(summarizeClips(summaryClips(rows, selection))), completed_at: at, error: null,
   });
   const row = db().prepare("SELECT * FROM final_results WHERE id = ?").get(finalId) as FinalRow;
   const input = await reportInput(projectId, pkgRow, row, "snapshot");
@@ -426,7 +452,17 @@ async function executeStitch(finalId: string, projectId: string, pkgRowId: strin
     let outputs: unknown;
     let cleanupFailed = false;
     try {
-      const run = await runWorkflowTemplate(development, "06-stitch-video.json", stitchWorkflowValues(ready.project.slug, ready.renderPackage!), projectId, undefined, {
+      // A remote worker reads the staged mirror of the package, not this PC's folder.
+      const remote = (await getMachineSettings()).executionDestination === "remote";
+      const wirePackage = remote ? remoteRenderPackage(ready.renderPackage!, ready.project.slug, ready.project.projectPath) : ready.renderPackage!;
+      // Only when a clip uses a processed artifact: the selected-clip stitch. Otherwise the unchanged original stitch.
+      const selected = ready.selection?.usesProcessed ? ready.selection : null;
+      if (selected) update(finalId, { clip_selection: JSON.stringify({ files: selected.files }) });
+      const template = selected ? "06b-stitch-selected.json" : "06-stitch-video.json";
+      const values = selected
+        ? { ...stitchWorkflowValues(ready.project.slug, wirePackage), clip_selection: JSON.stringify(selected.files.map((file) => ({ index: file.index, path: file.path }))) }
+        : stitchWorkflowValues(ready.project.slug, wirePackage);
+      const run = await runWorkflowTemplate(development, template, values, projectId, undefined, {
         jobId,
         onSubmitted: (promptId) => { update(finalId, { prompt_id: promptId, submitted_at: now() }); notify(projectId); },
         onProgress: (progress: WorkflowProgress) => setActivity(finalId, projectId, progress.phase, progress.queuePosition),
@@ -443,7 +479,7 @@ async function executeStitch(finalId: string, projectId: string, pkgRowId: strin
       outputs = error.outputs;
       cleanupFailed = true;
     }
-    await recordVideo(finalId, projectId, pkgRow, outputs, before);
+    await recordVideo(finalId, projectId, pkgRow, outputs, before, ready.selection?.usesProcessed ? ready.selection : null);
     if (cleanupFailed) addReport(projectId, "final_video", `The final video was stitched, but ComfyUI cleanup could not be confirmed: ${cleanup?.error ?? "unknown"}.`, cleanup, finalId);
   } catch (error) {
     const message = readableProductionError(error instanceof Error ? error.message : String(error), endpoint);

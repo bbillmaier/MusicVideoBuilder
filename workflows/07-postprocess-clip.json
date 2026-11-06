@@ -1,0 +1,77 @@
+{
+  "name": "07-postprocess-clip.json",
+  "stage": "postprocess",
+  "description": "Post-processes one rendered clip without touching it: optional ReActor face restoration (Restore) or face replacement with optional built-in CodeFormer (Replace), a face report, optional SeedVR2 restoration/upscaling, then a new MP4 in <package>/postprocess/ whose frame count, frame rate and aspect ratio are verified against the source. The app assembles the graph from the fragments below (electron/postprocess-workflow.ts).",
+  "prompt": {
+    "load": {
+      "class_type": "MartiniShotPostProcessLoad",
+      "inputs": {
+        "source_video": "{{source_video}}", "reference_image": "{{reference_image}}", "job_json": "{{job_json}}",
+        "frame_ram_budget_gb": "{{frame_ram_budget_gb}}", "unload_models": true
+      }
+    },
+    "save": {
+      "class_type": "MartiniShotSavePostProcessed",
+      "inputs": { "images": ["{{final_image_node}}", 0], "source_info": ["load", 2], "output_path": "{{output_path}}", "job_json": "{{job_json}}", "crf": 16 }
+    },
+    "output_path": { "class_type": "PreviewAny", "inputs": { "source": ["save", 0] } },
+    "metadata": { "class_type": "PreviewAny", "inputs": { "source": ["save", 1] } }
+  },
+  "repeat": {
+    "restore": {
+      "face": {
+        "class_type": "ReActorRestoreFace",
+        "inputs": { "image": ["load", 0], "facedetection": "{{face_detection}}", "model": "{{restore_model}}", "visibility": "{{restore_visibility}}", "codeformer_weight": "{{codeformer_weight}}" }
+      }
+    },
+    "replace": {
+      "face_options": {
+        "class_type": "ReActorOptions",
+        "inputs": {
+          "input_faces_order": "{{target_faces_order}}", "input_faces_index": "{{target_faces_index}}", "detect_gender_input": "no",
+          "source_faces_order": "large-small", "source_faces_index": "0", "detect_gender_source": "no", "console_log_level": 1,
+          "restore_swapped_only": true
+        }
+      },
+      "face": {
+        "class_type": "ReActorFaceSwapOpt",
+        "inputs": {
+          "enabled": true, "input_image": ["load", 0], "source_image": ["load", 1], "options": ["face_options", 0],
+          "swap_model": "{{swap_model}}", "facedetection": "{{face_detection}}", "face_restore_model": "{{restore_model}}",
+          "face_restore_visibility": "{{restore_visibility}}", "codeformer_weight": "{{codeformer_weight}}"
+        }
+      }
+    },
+    "face_report": {
+      "face_report": { "class_type": "MartiniShotFaceReport", "inputs": { "original": ["load", 0], "processed": ["face", 0], "job_json": "{{job_json}}" } },
+      "face_unload": { "class_type": "ReActorUnload", "inputs": { "trigger": ["face_report", 0] } },
+      "face_report_text": { "class_type": "PreviewAny", "inputs": { "source": ["face_report", 1] } }
+    },
+    "upscale": {
+      "seedvr2_dit": {
+        "class_type": "SeedVR2LoadDiTModel",
+        "inputs": {
+          "model": "{{dit_model}}", "device": "{{device}}", "blocks_to_swap": "{{blocks_to_swap}}", "swap_io_components": "{{swap_io_components}}",
+          "offload_device": "{{dit_offload_device}}", "cache_model": false, "attention_mode": "{{attention_mode}}"
+        }
+      },
+      "seedvr2_vae": {
+        "class_type": "SeedVR2LoadVAEModel",
+        "inputs": {
+          "model": "{{vae_model}}", "device": "{{device}}", "encode_tiled": "{{vae_tiling}}", "encode_tile_size": "{{vae_tile_size}}",
+          "encode_tile_overlap": "{{vae_tile_overlap}}", "decode_tiled": "{{vae_tiling}}", "decode_tile_size": "{{vae_tile_size}}",
+          "decode_tile_overlap": "{{vae_tile_overlap}}", "tile_debug": "false", "offload_device": "{{vae_offload_device}}", "cache_model": false
+        }
+      },
+      "seedvr2": {
+        "class_type": "SeedVR2VideoUpscaler",
+        "inputs": {
+          "image": ["{{upscale_input_node}}", 0], "dit": ["seedvr2_dit", 0], "vae": ["seedvr2_vae", 0], "seed": "{{seed}}",
+          "resolution": "{{resolution}}", "max_resolution": 0, "batch_size": "{{batch_size}}", "uniform_batch_size": "{{uniform_batch_size}}",
+          "temporal_overlap": "{{temporal_overlap}}", "prepend_frames": 0, "color_correction": "{{color_correction}}",
+          "input_noise_scale": 0.0, "latent_noise_scale": 0.0, "offload_device": "{{tensor_offload_device}}", "enable_debug": false
+        }
+      }
+    }
+  }
+}

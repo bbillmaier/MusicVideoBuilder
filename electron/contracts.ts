@@ -64,8 +64,12 @@ export type CreativeDirection = {
   /** 0 = no minimum; the director decides. Plan Story accepts 0–12. */
   minLocations: number;
   requestLocationImages: boolean;
-  /** 0–1. Used when clip prompts are written (Write Prompt Package), not by the story planner. */
+  /** 0–1: how often a recurring motif is offered to a shot. Used when clip prompts are written (Write Prompt Package),
+   *  not by the story planner. It never asks for surreal imagery by itself; see surrealMotifs. */
   motifWeight: number;
+  /** Whether recurring motifs and hooks may be surreal. New projects: off. Projects saved before this setting existed
+   *  read as on when their motif weight was above 0, because that slider was then labeled "Surreal recurring motif". */
+  surrealMotifs: boolean;
   danceStyle: string;
   targetShotSeconds: number;
   minShotSeconds: number;
@@ -156,6 +160,9 @@ export type PlanData = {
   suppliedLocations: string[];
   /** Planner warnings from the report (quota not met, missing beats…). */
   warnings: string[];
+  /** Unresolved planning problems recorded in director_context.json (an invalid scene type the repair could not fix, a
+   *  proposed event the brief did not request). Missing for plans made before they were recorded. */
+  planningIssues?: string[];
   /** True when the planner wrote no story beats (no brief, Story Wheel off, no quota): the rules decide everything. */
   rulesOnly: boolean;
 };
@@ -437,7 +444,7 @@ export type ProduceOverview = {
   upcoming: number[];
   currentClip: number | null;
   /** True while this app is rendering or writing a package for any project. */
-  busy: { kind: "package" | "render" | "stitch"; projectId: string } | null;
+  busy: { kind: "package" | "render" | "stitch" | "postprocess"; projectId: string } | null;
   timing: { elapsedSince: string | null; averageSeconds: number | null; samples: number; estimateSeconds: number | null };
   sections: TimelineSection[];
   /** Plan-level evidence shared by every clip (plan cache, location check). */
@@ -712,3 +719,115 @@ export type SongTimeline = {
   notes: string[];
   analysis: { running: boolean; error: string | null; canStart: boolean; blocker: string | null };
 };
+
+// ----- Post-processing (design_docs/05-post-processing-plan.md) -------------------------------------------------
+
+export const POST_FACE_MODES = ["preserve", "restore", "replace"] as const;
+export type PostFaceMode = typeof POST_FACE_MODES[number];
+/** worker_default = the worker's POST_PROCESSING_VRAM_MODE (unset there means high_vram). */
+export const POST_VRAM_MODES = ["worker_default", "low_vram", "high_vram"] as const;
+export type PostVramMode = typeof POST_VRAM_MODES[number];
+export type PostResolvedVramMode = Exclude<PostVramMode, "worker_default">;
+export const POST_OUTPUT_EDGES = [720, 1080, 1440, 2160] as const;
+export const POST_FACE_ORDERS = ["large-small", "small-large", "left-right", "right-left", "top-bottom", "bottom-top"] as const;
+export const POST_COLOR_CORRECTIONS = ["lab", "wavelet", "wavelet_adaptive", "hsv", "adain", "none"] as const;
+export const POST_ATTENTION_MODES = ["sdpa", "sageattn_2", "flash_attn_2"] as const;
+
+/** Advanced overrides. null means "use the memory preset's value". */
+export type PostAdvancedSettings = {
+  ditModel: string | null; batchSize: number | null; temporalOverlap: number | null; vaeTiling: boolean | null; blocksToSwap: number | null;
+  offload: "preset" | "none" | "cpu"; attention: typeof POST_ATTENTION_MODES[number]; colorCorrection: typeof POST_COLOR_CORRECTIONS[number];
+  seed: number; targetFacesOrder: typeof POST_FACE_ORDERS[number]; targetFacesIndex: string; uniformBatch: boolean;
+};
+
+/** What the user asked for on one clip. Face treatment and upscaling are independent. */
+export type PostSettings = {
+  faceMode: PostFaceMode;
+  /** Character reference for Replace (a performer/outfit asset id); null = the project's first performer image. */
+  referenceAssetId: string | null;
+  /** Replace only: let ReActor run CodeFormer on the swapped faces (Restore always restores). */
+  restoreAfterSwap: boolean;
+  /** CodeFormer fidelity weight (0–1). Higher keeps more of the input face; it is not an identity-lock strength. */
+  codeformerFidelity: number;
+  /** Blend of the restored face over the input (0.1–1). */
+  restoreVisibility: number;
+  upscale: boolean;
+  /** Target shortest edge in pixels (aspect ratio kept). */
+  outputShortEdge: typeof POST_OUTPUT_EDGES[number];
+  vramMode: PostVramMode;
+  advanced: PostAdvancedSettings;
+};
+
+export type PostAttemptStatus = "pending" | "queued" | "running" | "succeeded" | "failed" | "canceled";
+
+export type PostFaceReport = {
+  faceMode: string; frames: number; detector: boolean; handDetector: boolean; framesWithFace: number; framesChanged: number;
+  dropoutFrames: number[][]; multiFaceFrames: number[][]; handOverlapFrames: number[][]; smallFaceFrames: number[][];
+  warnings: string[]; reviewRequired: boolean;
+};
+
+export type PostAttempt = {
+  id: string; status: PostAttemptStatus; cacheKey: string;
+  /** Same source, reference, effective settings, and workflow version as the clip's current request. */
+  current: boolean;
+  requestedMode: PostVramMode; resolvedMode: PostResolvedVramMode | null; modeSource: string | null;
+  destination: "local" | "remote"; endpoint: string | null; summary: string;
+  startedAt: string; submittedAt: string | null; finishedAt: string | null; runtimeSeconds: number | null; error: string | null;
+  output: { fileName: string; url: string | null; exists: boolean; width: number; height: number; frames: number; fps: string; sizeBytes: number } | null;
+  faceReport: PostFaceReport | null; reviewRequired: boolean;
+  environment: { reactor: string | null; seedvr2: string | null; onnxruntime: string | null; ortProviders: string[] | null; torch: string | null; device: string | null } | null;
+};
+
+/** How the final stitch will use this clip. */
+export type PostResolution =
+  | { kind: "original"; reason: string }
+  | { kind: "bypass"; reason: string }
+  | { kind: "processed"; attemptId: string; reason: string }
+  | { kind: "unresolved"; reason: string };
+
+export type PostClipState = "not_requested" | "needs_processing" | "queued" | "running" | "done" | "needs_review" | "failed" | "canceled" | "stale" | "bypassed" | "not_rendered";
+
+export type PostClip = {
+  index: number; section: number | null; scene: ClipMode; start: number; end: number; duration: number;
+  rendered: boolean; sourceUrl: string | null; sourceSize: { width: number; height: number } | null;
+  settings: PostSettings; customized: boolean;
+  /** A starting suggestion from the scene type; never applied on its own. */
+  suggestion: { faceMode: PostFaceMode; upscale: boolean; reason: string };
+  state: PostClipState; stateText: string;
+  resolution: PostResolution;
+  selection: { choice: "original" | "processed"; attemptId: string | null } | null;
+  attempts: PostAttempt[];
+};
+
+export type PostWorkerInfo = {
+  endpoint: string; reachable: boolean; error: string | null;
+  vramDefault: { value: PostResolvedVramMode | null; source: string; raw: string | null; error: string | null } | null;
+  reactor: string | null; seedvr2: string | null; onnxruntime: string | null; ortCudaBuild: string | null; ortSessionProviders: string[] | null;
+  torch: string | null; cuda: string | null; device: string | null; vramTotal: number | null; ramTotal: number | null;
+  missingModels: { face: string[]; low_vram: string[]; high_vram: string[]; optional: string[] };
+  checkedAt: string;
+};
+
+export type PostPreset = {
+  mode: PostResolvedVramMode; label: string; budget: string; ditModel: string; batchSize: number; vaeTiling: boolean; blocksToSwap: number;
+  ditOffload: "none" | "cpu"; frameRamBudgetGb: number;
+};
+
+export type PostProcessOverview = {
+  projectId: string; projectName: string;
+  package: { runId: string; folder: string; clipCount: number } | null;
+  clips: PostClip[];
+  references: Array<{ id: string; role: AssetRole; name: string; url: string }>;
+  destination: "local" | "remote";
+  worker: PostWorkerInfo | null;
+  presets: PostPreset[];
+  queue: { active: boolean; current: number | null; pending: number[]; cancelling: boolean };
+  /** Why nothing can be processed right now (no package, ComfyUI down, other production work, …). */
+  blockers: string[];
+  /** The final stitch's view of post-processing: what it will use and what it still waits for. */
+  combine: { processedCount: number; bypassCount: number; unresolved: string[] };
+  defaults: PostSettings;
+};
+
+export type PostSettingsRequest = { clips: number[]; settings: PostSettings };
+export type PostSelectRequest = { clip: number; choice: "original" | "processed" | "clear"; attemptId?: string | null };
