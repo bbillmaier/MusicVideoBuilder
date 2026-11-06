@@ -136,7 +136,7 @@ def _attach_proposed_location_images(refs: list[dict[str, Any]], plan_name: str)
             lines.append(f"  {ref['name']}: image failed to load — {error}; using text-only")
     return lines
 from .mv_auto import KINDS, analyze_song, plan_auto_shots
-from .mv_story import (CAMERA_SYSTEM, CREATIVE_BRIEF_SYSTEM, DETAIL_SYSTEM, LOCATION_SYSTEM, LOCATION_QUOTA_SYSTEM, MOTIF_SYSTEM, STORY_SYSTEM, STYLE_SYSTEM,
+from .mv_story import (CAMERA_SYSTEM, CREATIVE_BRIEF_SYSTEM, DETAIL_SYSTEM, LOCATION_SYSTEM, LOCATION_QUOTA_SYSTEM, MOTIF_SYSTEM, STORY_SYSTEM, STYLE_SYSTEM, TIMELINE_SHOT_RULES,
                        build_camera_message, build_detail_message, build_location_message, build_motif_message,
                        build_creative_brief_message, build_story_message, build_style_message, build_location_quota_message,
                        creative_direction_text, parse_creative_brief, parse_details, parse_location_quota, parse_locations,
@@ -633,7 +633,7 @@ class MiniMaxH3AutoDirector:
     @staticmethod
     def _plan_story(llm, analysis, refs, brief, lyrics_story, words, seed, story_wheel=False,
                     propose_story_locations=False, min_locations=0, creative_direction="", cached=None,
-                    dance_style="", section_shots=None):
+                    dance_style="", section_shots=None, system=STORY_SYSTEM, shot_rules=None):
         """One LLM call for per-section story beats. Returns ({} , []) when neither option is on."""
         if not _clean(brief) and not lyrics_story and not story_wheel and not min_locations and not creative_direction:
             return {}, []
@@ -656,10 +656,10 @@ class MiniMaxH3AutoDirector:
                                        {r['name']: r['location_evidence'] for r in refs
                                         if r['kind'] == 'Location' and r.get('location_evidence')}, story_wheel,
                                        propose_story_locations, min_locations, creative_direction, dance_style,
-                                       section_shots)
+                                       section_shots, shot_rules or TIMELINE_SHOT_RULES)
         response = cached("Story Wheel" if story_wheel else "story", message, {}, 0.7,
-                          max(900, 160 * len(sections) if story_wheel else 100 + 80 * len(sections)), seed, STORY_SYSTEM) \
-            if cached else run_llm(llm, message, {}, 0.7, max(900, 160 * len(sections) if story_wheel else 100 + 80 * len(sections)), seed, STORY_SYSTEM)
+                          max(900, 160 * len(sections) if story_wheel else 100 + 80 * len(sections)), seed, system) \
+            if cached else run_llm(llm, message, {}, 0.7, max(900, 160 * len(sections) if story_wheel else 100 + 80 * len(sections)), seed, system)
         story, warnings = parse_story(response, len(sections), [r["name"] for r in refs if r["kind"] == "Location"])
         def count_locations(value):
             return {(_clean(beat.get("location") or beat.get("new_location"))).lower() for beat in value.values()

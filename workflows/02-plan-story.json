@@ -22,7 +22,9 @@
         "min_locations": "{{min_locations}}",
         "request_performer_location_images": "{{request_location_images}}",
         "seed": "{{seed}}",
-        "reset_plan_cache": "{{reset_plan_cache}}"
+        "reset_plan_cache": "{{reset_plan_cache}}",
+        "story_system": "{{prompt_story_system}}",
+        "timeline_shot_rules": "{{prompt_timeline_shot_rules}}"
       }
     },
     "report": {

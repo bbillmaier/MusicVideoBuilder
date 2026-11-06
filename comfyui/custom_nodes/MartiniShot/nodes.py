@@ -16,7 +16,7 @@ from .mv_auto import analyze_song, plan_auto_shots
 from .mv_auto_nodes import MiniMaxH3AutoDirector
 from .mv_nodes import MiniMaxH3MusicVideoDirector, MiniMaxH3MusicVideoPromptRevision, MiniMaxH3MusicVideoSegmentLoader
 from .mv_story import (CREATIVE_BRIEF_SYSTEM, STORY_SYSTEM, TIMELINE_SHOT_RULES, build_creative_brief_message, parse_story,
-                       timeline_shot_rows,
+                       prompt_text, timeline_shot_rows,
                        creative_direction_text, parse_creative_brief)
 from .dance_nodes import run_llm
 from .director_context import attach_context_to_shots, build_director_context
@@ -214,7 +214,9 @@ class MartiniShotPlanStory:
                              "min_locations": ("INT", {"default": 0, "min": 0, "max": 12}),
                              "request_performer_location_images": ("BOOLEAN", {"default": True}),
                              "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFF}),
-                             "reset_plan_cache": ("BOOLEAN", {"default": False})}}
+                             "reset_plan_cache": ("BOOLEAN", {"default": False})},
+                "optional": {"story_system": ("STRING", {**MULTILINE, "tooltip": PROMPT_TOOLTIP}),
+                             "timeline_shot_rules": ("STRING", {**MULTILINE, "tooltip": PROMPT_TOOLTIP})}}
 
     RETURN_TYPES = ("MARTINI_STORY_PLAN", "STRING", "BOOLEAN")
     RETURN_NAMES = ("story_plan", "report", "needs_location_images")
@@ -222,7 +224,8 @@ class MartiniShotPlanStory:
     CATEGORY = CATEGORY
 
     def plan(self, project, llm, creative_brief="", story_brief="", story_wheel=True, min_locations=0,
-             request_performer_location_images=True, seed=0, reset_plan_cache=False):
+             request_performer_location_images=True, seed=0, reset_plan_cache=False, story_system="",
+             timeline_shot_rules=""):
         project = copy.deepcopy(project)
         lines = []
         if reset_plan_cache:
@@ -253,6 +256,7 @@ class MartiniShotPlanStory:
             lambda stage, message, _kwargs, temperature, tokens, call_seed, system:
                 _cached(lines, llm, stage, message, temperature, tokens, call_seed, system),
             section_shots=timeline_shot_rows(analysis["sections"], timeline["shots"], timeline["duration"]) if timeline else None,
+            system=prompt_text(story_system, STORY_SYSTEM), shot_rules=prompt_text(timeline_shot_rules, TIMELINE_SHOT_RULES),
         )
         requested = []
         if request_performer_location_images:
@@ -311,6 +315,8 @@ class MartiniShotAnalyzeSong:
                 f"{len(analysis['beats'])} beats, {float(analysis['bpm']):.1f} BPM, {float(analysis['duration']):.2f} s.",)
 
 
+PROMPT_TOOLTIP = "Instruction text for the director LLM. The app fills this from its prompt files; leave empty for the built-in default."
+
 SECTION_REWRITE_RULES = """You are rewriting only some sections of an existing music-video story after the user re-cut the song.
 The kept sections are fixed and must not be repeated or changed. Each rewritten section must continue from the section
 before it and lead into the section after it, keep the story's overall arc, and fit its new length and loudness."""
@@ -325,7 +331,10 @@ class MartiniShotApplyTimeline:
         return {"required": {"project": ("MARTINI_PROJECT",),
                              "section_sources": ("STRING", {"default": "[]", "tooltip": "JSON list, one entry per timeline section: the plan section number its story beat comes from, or null to rewrite it."}),
                              "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFF})},
-                "optional": {"llm": ("H3_PROMPT_LLM",)}}
+                "optional": {"llm": ("H3_PROMPT_LLM",),
+                             "story_system": ("STRING", {**MULTILINE, "tooltip": PROMPT_TOOLTIP}),
+                             "section_rewrite_rules": ("STRING", {**MULTILINE, "tooltip": PROMPT_TOOLTIP}),
+                             "timeline_shot_rules": ("STRING", {**MULTILINE, "tooltip": PROMPT_TOOLTIP})}}
 
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("report",)
@@ -336,7 +345,8 @@ class MartiniShotApplyTimeline:
     def IS_CHANGED(cls, **kwargs):
         return float("nan")  # reads timeline.json and story_plan.json, which the app edits
 
-    def apply(self, project, section_sources="[]", seed=0, llm=None):
+    def apply(self, project, section_sources="[]", seed=0, llm=None, story_system="", section_rewrite_rules="",
+              timeline_shot_rules=""):
         timeline = _saved_timeline(project)
         if timeline is None:
             raise ValueError(f"{TIMELINE_FILE} is missing, invalid, or was made for a different song. Save the timeline again.")
@@ -357,9 +367,11 @@ class MartiniShotApplyTimeline:
                 raise ValueError("Rewriting story sections needs the director LLM.")
             settings = plan.get("settings", {})
             message = self._message(project, plan, analysis, story, rewrite, bool(settings.get("story_wheel")),
-                                    timeline_shot_rows(analysis["sections"], timeline["shots"], timeline["duration"]))
+                                    timeline_shot_rows(analysis["sections"], timeline["shots"], timeline["duration"]),
+                                    prompt_text(section_rewrite_rules, SECTION_REWRITE_RULES),
+                                    prompt_text(timeline_shot_rules, TIMELINE_SHOT_RULES))
             response = _cached(lines, llm, "section rewrite", message, 0.7, 260 + 180 * len(rewrite),
-                               int(seed) + 97, STORY_SYSTEM)
+                               int(seed) + 97, prompt_text(story_system, STORY_SYSTEM))
             allowed = self._places(project, story)
             parsed, parse_warnings = parse_story(response, len(sources),
                                                  [r["name"] for r in project["refs"] if r["kind"] == "Location"])
@@ -410,7 +422,8 @@ class MartiniShotApplyTimeline:
         return names
 
     @staticmethod
-    def _message(project, plan, analysis, story, rewrite, story_wheel, section_shots=None):
+    def _message(project, plan, analysis, story, rewrite, story_wheel, section_shots=None,
+                 rewrite_rules=SECTION_REWRITE_RULES, shot_rules=TIMELINE_SHOT_RULES):
         from .music_energy import energy_label
         from .mv_plan import format_time
         settings = plan.get("settings", {})
@@ -418,7 +431,7 @@ class MartiniShotApplyTimeline:
                         | {beat.get("location") or beat.get("new_location") for beat in story.values()
                            if beat.get("location") or beat.get("new_location")})
         outfits = [r["name"] for r in project["refs"] if r["kind"] == "Outfit"]
-        parts = [SECTION_REWRITE_RULES]
+        parts = [rewrite_rules]
         if str(settings.get("story_brief", "")).strip():
             parts.append(f"The story (highest priority): {' '.join(str(settings['story_brief']).split())}")
         if plan.get("creative_direction"):
@@ -443,7 +456,7 @@ class MartiniShotApplyTimeline:
                     row += f" (starts: {beat.get('starts') or '-'}; ends: {beat.get('ends') or '-'})"
             rows.append(row)
         if section_shots:
-            parts.append(TIMELINE_SHOT_RULES)
+            parts.append(shot_rules)
         parts.append("Song sections:\n" + "\n".join(rows))
         targets = ", ".join(map(str, rewrite))
         if story_wheel:

@@ -77,6 +77,8 @@ On first launch, Martini Shot automatically creates its local SQLite database at
 
 The [RunPod setup guide](cloud/runpod/README.md) sets up a pod with ComfyUI, the MartiniShot nodes, and the models. The selected worker can execute planning, prompt writing, rendering, and stitching. The app syncs project files before remote work and downloads changed artifacts afterwards; you can switch destinations between stages or clips.
 
+[Runpod Template](https://console.runpod.io/hub/template/xyey15y07l?ref=enldftma)
+
 For node development, run `tools/sync-martinishot.ps1` to copy the latest nodes from the local ComfyUI install into the repo before committing.
 
 ## Windows distribution

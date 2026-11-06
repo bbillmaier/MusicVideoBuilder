@@ -177,6 +177,24 @@ Checks after the run: the video path came back, is a new `.mp4` in the package f
 
 If Martini Shot closes during a stitch, the attempt is marked interrupted. The next Stitch final video first asks ComfyUI about it. If ComfyUI is still running it, the app refuses. If it finished, its video is recorded (after the same checks) and a `/free` cycle runs, instead of stitching a duplicate.
 
+## prompts/ (director LLM instructions)
+
+Instruction texts for the director LLM, owned by the app and sent with each workflow so they can change without
+restarting or redeploying ComfyUI. Each file is one placeholder, `{{prompt_<id>}}`, listed in `electron/prompt-library.ts`;
+the app reads the files fresh for every run and fills them into any template (like Settings values).
+
+| File | Placeholder | Node input | Used by |
+|---|---|---|---|
+| `story-system.txt` | `{{prompt_story_system}}` | `story_system` | 02 (Plan Story), 02b (section rewrite) |
+| `timeline-shot-rules.txt` | `{{prompt_timeline_shot_rules}}` | `timeline_shot_rules` | 02, 02b, only when `timeline.json` exists |
+| `section-rewrite-rules.txt` | `{{prompt_section_rewrite_rules}}` | `section_rewrite_rules` | 02b |
+
+The node inputs are optional; empty means the node's built-in default (`STORY_SYSTEM`, `TIMELINE_SHOT_RULES`,
+`SECTION_REWRITE_RULES`), so the canvas copies and older workflows still work. `prompt-library.test.ts` fails when a file
+and its default drift apart: change both together. Only instruction prose lives here. The output-format lines the nodes
+parse (`SECTION n | scene: …`) stay in node code. The prompt text is part of the director cache key, so an edit always
+gets a fresh LLM answer.
+
 ## Validating templates against the installed ComfyUI
 
 With ComfyUI running, `npm run validate:workflows` reads `/object_info` and checks every template: node classes loaded, input names, combo values (model files, modes), and link output indexes. It never queues a prompt.

@@ -163,6 +163,8 @@ The script checks every download against its known size, so a partial file is re
 
 ## Troubleshooting
 
+**`CUBLAS_STATUS_INVALID_VALUE` / `CUBLAS_STATUS_NOT_INITIALIZED` on the first render.** The image's CUDA libraries (`/usr/local/cuda/lib64` on `LD_LIBRARY_PATH`) were overriding the cuBLAS that PyTorch installs with pip. `setup.sh` now removes the image's CUDA directories from `LD_LIBRARY_PATH`, and its GPU smoke test runs matrix multiplies, so this stops setup instead of the first render. To test by hand: `LD_LIBRARY_PATH= /workspace/venv/bin/python -c "import torch; a=torch.ones(256,256,device='cuda'); print((a@a).sum())"`.
+
 **HTTP ERROR 403 when opening ComfyUI in the browser.** ComfyUI's origin check rejects any request with `Sec-Fetch-Site: cross-site` (`server.py`, `create_origin_only_middleware`). Clicking **Connect** on runpod.io opens `proxy.runpod.net`, a different site, so the page is refused. ComfyUI doesn't log anything when this happens.
 - Paste the proxy URL into a new tab yourself. Typed addresses and bookmarks aren't cross-site.
 - Or start ComfyUI with `COMFYUI_ARGS=--enable-cors-header`. That replaces the origin check with permissive CORS. The pod has no login anyway, but any web page that knew the URL could then queue jobs on it.

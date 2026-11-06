@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createComfyJob, db, getMachineSettings, type ComfyJob, updateComfyJob } from "./db";
+import { promptValues } from "./prompt-library";
 import { RemoteRenderStaging } from "./remote-render-staging";
 import { applyTemplateValues, loadWorkflowTemplate, type WorkflowTemplate } from "./workflow-template";
 
@@ -275,7 +276,10 @@ export async function nodeInputOptions(classType: string, input: string): Promis
   const info = await response.json() as Record<string, { input?: { required?: Record<string, unknown[]> } }>;
   const spec = info[classType]?.input?.required?.[input];
   if (!info[classType]) throw new Error(`ComfyUI does not have the ${classType} node loaded.`);
-  return Array.isArray(spec?.[0]) ? (spec[0] as unknown[]).map(String) : [];
+  // Older ComfyUI lists a combo's options as the first item ([["a", "b"], {...}]); newer ComfyUI uses ["COMBO", { options: [...] }].
+  if (Array.isArray(spec?.[0])) return (spec[0] as unknown[]).map(String);
+  const options = spec?.[0] === "COMBO" ? (spec[1] as { options?: unknown } | undefined)?.options : undefined;
+  return Array.isArray(options) ? options.map(String) : [];
 }
 
 /** The samplers and schedulers the running ComfyUI (local or remote, per Settings) offers for clip renders. */
@@ -364,7 +368,8 @@ export async function runWorkflowTemplate(isDevelopment: boolean, name: string, 
   let result: { outputs: unknown; messages: unknown[] };
   let stopWatching = () => undefined as void;
   try {
-    const prompt = build ? build(template) : applyTemplateValues(template.prompt, { ...settings, ...values }) as Record<string, unknown>;
+    // Director prompt texts ({{prompt_<id>}}) come from the app's prompt files, read fresh for every run.
+    const prompt = build ? build(template) : applyTemplateValues(template.prompt, { ...settings, ...await promptValues(isDevelopment), ...values }) as Record<string, unknown>;
     await checkNodeTypes(endpoint, prompt);
     // One client ID per run: it receives this prompt's step events (and, for renders, the live previews).
     const clientId = options.clientId || randomUUID();

@@ -42,8 +42,9 @@ test("freshness compares every Plan Story input and ignores motif weight", () =>
 });
 
 test("02-plan-story uses the installed Martini Shot nodes with named values", () => {
+  const prompts = { prompt_story_system: "STORY", prompt_timeline_shot_rules: "SHOTS" };
   const inputs = planInputs(direction, PREFERRED_DIRECTOR_LLM, assets);
-  const prompt = applyTemplateValues(template.prompt, planWorkflowValues("static-heart", inputs, false)) as Record<string, Node>;
+  const prompt = applyTemplateValues(template.prompt, { ...prompts, ...planWorkflowValues("static-heart", inputs, false) }) as Record<string, Node>;
   assert.equal(template.stage, "plan");
   assert.deepEqual(Object.keys(prompt).sort(), ["llm", "needs_location_images", "open", "plan", "report"]);
   assert.deepEqual(prompt.open, { class_type: "MartiniShotOpenProject", inputs: { project_name: "static-heart" } });
@@ -52,13 +53,14 @@ test("02-plan-story uses the installed Martini Shot nodes with named values", ()
   assert.deepEqual(prompt.plan.inputs, {
     project: ["open", 0], llm: ["llm", 0], creative_brief: inputs.creativeBrief, story_brief: inputs.creativeBrief, story_wheel: true,
     min_locations: 4, request_performer_location_images: true, seed: 1234, reset_plan_cache: false,
+    story_system: "STORY", timeline_shot_rules: "SHOTS",
   });
   assert.deepEqual(prompt.report, { class_type: "PreviewAny", inputs: { source: ["plan", 1] } });
   assert.deepEqual(prompt.needs_location_images, { class_type: "PreviewAny", inputs: { source: ["plan", 2] } });
-  const reroll = applyTemplateValues(template.prompt, planWorkflowValues("static-heart", inputs, true)) as Record<string, Node>;
+  const reroll = applyTemplateValues(template.prompt, { ...prompts, ...planWorkflowValues("static-heart", inputs, true) }) as Record<string, Node>;
   assert.equal(reroll.plan.inputs.reset_plan_cache, true);
   // A brief that looks like a placeholder is passed through literally.
-  const literal = applyTemplateValues(template.prompt, planWorkflowValues("x", { ...inputs, creativeBrief: "{{seed}}" }, false)) as Record<string, Node>;
+  const literal = applyTemplateValues(template.prompt, { ...prompts, ...planWorkflowValues("x", { ...inputs, creativeBrief: "{{seed}}" }, false) }) as Record<string, Node>;
   assert.equal(literal.plan.inputs.creative_brief, "{{seed}}");
 });
 

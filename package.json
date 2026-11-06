@@ -15,7 +15,7 @@
     "dist": "npm run build && electron-builder --win nsis",
     "validate:workflows": "node tools/validate-workflows.mjs",
     "typecheck": "tsc -b && tsc -p tsconfig.main.json --noEmit",
-    "test:main": "npm run build:main && node --test dist-electron/workflow-template.test.js dist-electron/project-rules.test.js dist-electron/create-project-workflow.test.js dist-electron/plan-rules.test.js dist-electron/location-rules.test.js dist-electron/production-rules.test.js dist-electron/results-rules.test.js dist-electron/remote-render-staging.test.js dist-electron/timeline-rules.test.js dist-electron/timeline-edit.test.js"
+    "test:main": "npm run build:main && node --test dist-electron/workflow-template.test.js dist-electron/project-rules.test.js dist-electron/create-project-workflow.test.js dist-electron/plan-rules.test.js dist-electron/location-rules.test.js dist-electron/production-rules.test.js dist-electron/results-rules.test.js dist-electron/remote-render-staging.test.js dist-electron/timeline-rules.test.js dist-electron/timeline-edit.test.js dist-electron/prompt-library.test.js"
   },
   "build": {
     "appId": "local.martinishot.app",

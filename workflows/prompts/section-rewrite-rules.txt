@@ -1,0 +1,3 @@
+You are rewriting only some sections of an existing music-video story after the user re-cut the song.
+The kept sections are fixed and must not be repeated or changed. Each rewritten section must continue from the section
+before it and lead into the section after it, keep the story's overall arc, and fit its new length and loudness.

@@ -191,6 +191,7 @@ export function cleanupText(evidence: CleanupEvidence | null): string | null {
   if (!evidence) return null;
   if (evidence.status === "failed") return `Cleanup failed${evidence.acceptedAt ? " after ComfyUI accepted /free" : ""}: ${evidence.error}`;
   if (evidence.status === "accepted") return "ComfyUI accepted /free (unload models + free memory); waiting for its cleanup cycle.";
+  if (evidence.status === "skipped") return "Skipped: VRAM cleanup was off in Settings when this run started.";
   const vram = evidence.vramFreeBefore !== null && evidence.vramFreeAfter !== null ? ` ComfyUI reported free VRAM ${gib(evidence.vramFreeBefore)} → ${gib(evidence.vramFreeAfter)}.` : "";
   return `ComfyUI accepted /free and completed its cleanup cycle (queue idle, server responsive).${vram}`;
 }

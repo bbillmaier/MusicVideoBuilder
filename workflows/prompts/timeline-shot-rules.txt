@@ -1,0 +1,5 @@
+The user cut the song into shots on the timeline; the cuts are fixed and listed under each section.
+Write each section's beat so it plays across that section's shots, one visible step per shot where it helps.
+A shot marked with a scene type is filmed as that type whatever the section says; choose the section's scene for its
+unmarked shots, and use the marked type when every shot in the section has the same one.
+A shot marked continue or new angle keeps the place and outfit of the shot before it.

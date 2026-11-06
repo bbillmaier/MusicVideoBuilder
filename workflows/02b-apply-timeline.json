@@ -17,7 +17,10 @@
         "project": ["open", 0],
         "llm": ["llm", 0],
         "section_sources": "{{section_sources}}",
-        "seed": "{{seed}}"
+        "seed": "{{seed}}",
+        "story_system": "{{prompt_story_system}}",
+        "section_rewrite_rules": "{{prompt_section_rewrite_rules}}",
+        "timeline_shot_rules": "{{prompt_timeline_shot_rules}}"
       }
     },
     "report": {

@@ -44,11 +44,18 @@ MOTIF: <one recurring visual motif; or none>
 EVENT: <one required one-off event or scene; or none>"""
 
 
-TIMELINE_SHOT_RULES = ("The user cut the song into shots on the timeline; the cuts are fixed and listed under each section. "
-                       "Write each section's beat so it plays across that section's shots, one visible step per shot where "
-                       "it helps. A shot marked with a scene type is filmed as that type whatever the section says; choose "
-                       "the section's scene for its unmarked shots, and use the marked type when every shot in the section "
-                       "has the same one. A shot marked continue or new angle keeps the place and outfit of the shot before it.")
+TIMELINE_SHOT_RULES = """The user cut the song into shots on the timeline; the cuts are fixed and listed under each section.
+Write each section's beat so it plays across that section's shots, one visible step per shot where it helps.
+A shot marked with a scene type is filmed as that type whatever the section says; choose the section's scene for its
+unmarked shots, and use the marked type when every shot in the section has the same one.
+A shot marked continue or new angle keeps the place and outfit of the shot before it."""
+
+
+def prompt_text(value, default: str) -> str:
+    """An instruction text passed in by the workflow (the app's editable prompt files), or the built-in default when
+    the input is empty or missing, so older workflows and the ComfyUI canvas keep working."""
+    text = str(value or "").strip()
+    return text or default
 
 
 def timeline_shot_rows(sections: list[dict[str, Any]], shots: list[dict[str, Any]], duration: float) -> dict[int, str]:
@@ -76,7 +83,7 @@ def build_story_message(sections: list[dict[str, Any]], locations: list[str], ou
                          evidence: dict[str, dict[str, list[str]]] | None = None,
                          story_wheel: bool = False, propose_story_locations: bool = False,
                          min_locations: int = 0, creative_direction: str = "", dance_style: str = "",
-                         section_shots: dict[int, str] | None = None) -> str:
+                         section_shots: dict[int, str] | None = None, shot_rules: str = TIMELINE_SHOT_RULES) -> str:
     parts = []
     if brief.strip():
         parts.append(f"The story (highest priority): {' '.join(brief.split())}")
@@ -122,7 +129,7 @@ def build_story_message(sections: list[dict[str, Any]], locations: list[str], ou
             row += f". {section_shots[index]}"
         rows.append(row)
     if section_shots:
-        parts.append(TIMELINE_SHOT_RULES)
+        parts.append(shot_rules)
     parts.append("Song sections:\n" + "\n".join(rows))
     if story_wheel:
         parts.append("Build a connected Story Wheel. Every section must visibly change the situation: phase names its "

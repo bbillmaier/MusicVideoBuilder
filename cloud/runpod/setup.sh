@@ -168,19 +168,26 @@ if command -v apt-get >/dev/null && [[ "$(id -u)" == 0 ]]; then
 fi
 command -v git >/dev/null || die "git is required"
 command -v python3 >/dev/null || die "python3 is required"
-if [[ "$SAGE_ATTENTION" == 1 ]]; then
-  nvcc_check="$(command -v nvcc || ls /usr/local/cuda/bin/nvcc 2>/dev/null || true)"
-  [[ -n "$nvcc_check" ]] && "$nvcc_check" --version | grep -q "release ${TORCH_CUDA_VERSION}," \
-    || die "Use a CUDA $TORCH_CUDA_VERSION development image for SageAttention (default: runpod/pytorch:1.6.0-cu1300-torch291-ubuntu2404), or set SAGE_ATTENTION=0"
-fi
-
 if [[ "$RUNPOD_SERVICES" == 1 && -x /start.sh ]]; then
   # The image's start script skips JupyterLab without a password. MartiniPass is a shared default: anyone with this
   # pod's Jupyter URL can log in with it, so set JUPYTER_PASSWORD (ideally as a RunPod secret) to use your own.
+  # Started before any check that can stop setup, so SSH/Jupyter stay reachable for debugging.
   export JUPYTER_PASSWORD="${JUPYTER_PASSWORD:-MartiniPass}"
   log "Starting the image's RunPod services (SSH/Jupyter) in the background"
   nohup /start.sh >"$LOG_DIR/runpod-start.log" 2>&1 &
 fi
+
+if [[ "$SAGE_ATTENTION" == 1 ]]; then
+  nvcc_check="$(command -v nvcc || ls /usr/local/cuda/bin/nvcc 2>/dev/null || true)"
+  [[ -n "$nvcc_check" ]] && "$nvcc_check" --version | grep -q "release ${TORCH_CUDA_VERSION}," \
+    || warn "SageAttention 2 needs a CUDA $TORCH_CUDA_VERSION development image (default: runpod/pytorch:1.6.0-cu1300-torch291-ubuntu2404); falling back to SageAttention 1"
+fi
+
+# PyTorch brings its own CUDA libraries via pip. The image's toolkit libraries (/usr/local/cuda/lib64 on LD_LIBRARY_PATH)
+# must not shadow them: mixing the image's cuBLAS with pip's makes every matrix multiply fail
+# (CUBLAS_STATUS_INVALID_VALUE / NOT_INITIALIZED). The driver paths (/usr/local/nvidia) stay. nvcc does not need these.
+LD_LIBRARY_PATH="$(tr ':' '\n' <<<"${LD_LIBRARY_PATH:-}" | grep -v -e '^$' -e '^/usr/local/cuda' | paste -sd: - || true)"
+export LD_LIBRARY_PATH
 
 # ---------------------------------------------------------------- 2. ComfyUI
 log "ComfyUI ($COMFYUI_REF)"
@@ -260,6 +267,10 @@ print(f"Runtime: PyTorch {torch.__version__}, CUDA {torch.version.cuda}")
 assert torch.cuda.is_available(), "CUDA is unavailable; use a host driver compatible with the selected CUDA runtime"
 x = torch.ones(16, device='cuda')
 assert (x + x).sum().item() == 32
+# Matrix multiplies go through cuBLAS, which an elementwise op never touches.
+a = torch.ones(256, 256, device='cuda')
+assert torch.nn.functional.linear(a, a).sum().item() == 256 ** 3, "cuBLAS fp32 matmul gave a wrong result"
+assert (a.half() @ a.half()).float().sum().item() == 256 ** 3, "cuBLAS fp16 matmul gave a wrong result"
 torch.cuda.synchronize()
 print(f"GPU smoke test passed: {torch.cuda.get_device_name(0)}")
 PYCODE
@@ -298,11 +309,10 @@ install_sage() {
     echo "  using the cached build $wheel"
   else
     nvcc_bin="$(command -v nvcc || ls /usr/local/cuda/bin/nvcc 2>/dev/null || true)"
-    if [[ -n "$nvcc_bin" && -n "$cap" ]]; then
-      if ! "$nvcc_bin" --version | grep -q "release ${TORCH_CUDA_VERSION},"; then
-        warn "SageAttention build needs a CUDA $TORCH_CUDA_VERSION compiler matching PyTorch; change the RunPod container image"
-        return 1
-      fi
+    if [[ -n "$nvcc_bin" && -n "$cap" ]] && ! "$nvcc_bin" --version | grep -q "release ${TORCH_CUDA_VERSION},"; then
+      # Fall through to the SageAttention 1 fallback below.
+      warn "SageAttention 2 needs a CUDA $TORCH_CUDA_VERSION compiler matching PyTorch; change the RunPod container image"
+    elif [[ -n "$nvcc_bin" && -n "$cap" ]]; then
       log "Building SageAttention 2 for sm_${cap/./} with $("$nvcc_bin" --version | tail -1) (first start only, about 10 minutes)"
       mkdir -p "$cache"
       "$PY" -m pip install --quiet ninja packaging setuptools wheel
