@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { packageShots, parseAnalysis, previewCuts, pyRound, sectionCuts, timelineSections, type AnalysisSection, type CutSettings } from "./timeline-rules";
+import { cutUnit, packageShots, parseAnalysis, previewCuts, pyRound, sectionCuts, timelineSections, type AnalysisSection, type CutSettings } from "./timeline-rules";
 
 const beats = Array.from({ length: 81 }, (_, i) => i * 0.5); // 120 BPM, a bar every 2 s
 const section = (start: number, end: number, energy = 0.5): AnalysisSection =>
@@ -55,4 +55,17 @@ test("packageShots groups a shot's render clips", () => {
     ({ index, shot, section: 1, start, end, mode: "Dance", transition: index === 3 ? "New angle" : "Continue", status: "pending" as const });
   const shots = packageShots([clip(1, 1, 0, 5), clip(2, 1, 5, 9), clip(3, 2, 9, 12)]);
   assert.deepEqual(shots.map((shot) => [shot.start, shot.end, shot.clips.length, shot.transition]), [[0, 9, 2, "Continue"], [9, 12, 1, "New angle"]]);
+});
+
+test("seeded cuts match the nodes (mv_auto.cut_unit / _cut_points) and change with the plan seed", () => {
+  // reference values printed by the Python nodes for the same inputs
+  const units = [cutUnit(0, 1, 0), cutUnit(1959527090, 3, 2), cutUnit(4294967295, 15, 1002), cutUnit(3532593991, 7, 0)];
+  assert.deepEqual(units.map((value) => Math.round(value * 1e10) / 1e10), [0.4270357527, 0.5011410632, 0.7526714646, 0.3758480952]);
+  const beats = Array.from({ length: 120 }, (_, index) => index * 0.5);
+  const section: AnalysisSection = { start: 10, end: 38, energy: 0.8, beatStart: 20, beatEnd: 76, label: "A", role: "chorus", loudness: 0 };
+  const settings: CutSettings = { targetShotSeconds: 8, minShotSeconds: 3, maxShotSeconds: 10, cutRateVsEnergy: 0.5 };
+  assert.deepEqual(sectionCuts(section, beats, settings, 4), [10, 16, 24, 30], "no cut seed: the original fixed cuts");
+  assert.deepEqual(sectionCuts(section, beats, { ...settings, cutSeed: null }, 4), [10, 16, 24, 30]);
+  assert.deepEqual(sectionCuts(section, beats, { ...settings, cutSeed: 1959527090 }, 4), [10, 16, 24, 30]);
+  assert.deepEqual(sectionCuts(section, beats, { ...settings, cutSeed: 3532593991 }, 4), [10, 18, 26, 32]);
 });

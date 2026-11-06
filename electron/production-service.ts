@@ -16,7 +16,7 @@ import type {
 } from "./contracts";
 import { archiveStamp, formatRanges, parseClipSelection, withContinuations } from "./results-rules";
 import {
-  ComfyWorkflowError, comfyHistory, comfyQueueIds, comfyStatus, freeComfyMemory, runWorkflowTemplate, serializeComfyWork,
+  ComfyWorkflowError, comfyHistory, comfyQueueIds, comfyStatus, freeComfyMemory, runWorkflowTemplate, selectedComfyEndpoint, serializeComfyWork,
   type CleanupEvidence, type StepProgress, type WorkflowProgress,
 } from "./comfy-client";
 import { db, getMachineSettings } from "./db";
@@ -26,7 +26,7 @@ import { previewText, storySignature, parseStoryPlan, reportBlock, surrealSettin
 import { directorLlmOptions, planOverview, renderSteps, writeSectionAction } from "./plan-service";
 import { claimProduction, productionBusy, timelineApplying } from "./production-lock";
 import {
-  FIXED_INDEX, MAX_NOISE_SEED, NEXT_MISSING, RENDER_NAME, actionValidation, clipMetadata, estimateRemaining, findVideo, parseLoaderReport,
+  FIXED_INDEX, MAX_NOISE_SEED, NEXT_MISSING, RENDER_NAME, actionValidation, attemptsOnSelectedComfy, clipMetadata, estimateRemaining, findVideo, parseLoaderReport,
   parseManifest, parsePackageReport, parseProductionReport, queueTarget, readableProductionError, savedVideo, validateClipIndex,
   validateQueueCount, type ClipMeta, type FolderFile,
 } from "./production-rules";
@@ -655,16 +655,22 @@ export async function stopAfterCurrent(projectId: unknown): Promise<ProduceOverv
 /** Before any new render: settles attempts that were running when Martini Shot closed, using ComfyUI's own queue and history.
  *  Refuses to continue while ComfyUI is still executing one of them (Next missing would otherwise render that clip twice). */
 async function reconcileInterrupted(projectId: string, packageRunId: string, folder: string): Promise<void> {
-  const rows = (db().prepare("SELECT * FROM render_attempts WHERE package_run_id = ? AND status = 'interrupted' AND prompt_id IS NOT NULL").all(packageRunId) as AttemptRow[]);
+  const interrupted = (db().prepare("SELECT * FROM render_attempts WHERE package_run_id = ? AND status = 'interrupted' AND prompt_id IS NOT NULL").all(packageRunId) as AttemptRow[]);
+  if (!interrupted.length) return;
+  // Only ask the ComfyUI selected now. A This-PC attempt is never checked while the remote worker is selected (and an
+  // earlier pod is never asked at all); those attempts stay interrupted and are checked once their ComfyUI is selected.
+  const settings = await getMachineSettings();
+  const { endpoint: selected } = await selectedComfyEndpoint();
+  const rows = attemptsOnSelectedComfy(interrupted, selected, settings.comfyUrl);
   if (!rows.length) return;
-  const queue = await comfyQueueIds(rows[0]?.remote_endpoint || undefined);
+  const queue = await comfyQueueIds(selected);
   const busyRow = rows.find((row) => queue.running.includes(row.prompt_id!) || queue.pending.includes(row.prompt_id!));
   if (busyRow) {
     throw new Error(`ComfyUI is still rendering clip ${busyRow.clip_index}, which started before Martini Shot was closed. Wait for it to finish in ComfyUI, then queue again.`);
   }
   let needsCleanup = false;
   for (const row of rows) {
-    const history = await comfyHistory(row.prompt_id!, row.remote_endpoint || undefined);
+    const history = await comfyHistory(row.prompt_id!, selected);
     const at = now();
     if (history?.status === "success") {
       const saved = savedVideo(history.outputs, "save");
@@ -687,7 +693,7 @@ async function reconcileInterrupted(projectId: string, packageRunId: string, fol
   }
   await syncClipsWithDisk(packageRunId, folder);
   if (needsCleanup) {
-    const cleanup = await freeComfyMemory(rows.find((row) => row.remote_endpoint)?.remote_endpoint || undefined);
+    const cleanup = await freeComfyMemory(selected);
     addReport(projectId, "render_cleanup", `Cleanup after recovering earlier renders: ${cleanupText(cleanup)}`, cleanup);
     if (cleanup.status !== "completed") throw new Error(`ComfyUI cleanup did not complete, so no new clip was started. ${cleanup.error ?? ""}`);
   }

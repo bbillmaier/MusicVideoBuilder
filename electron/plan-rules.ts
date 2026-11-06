@@ -99,6 +99,11 @@ export type PlanInputs = {
   directorLlm: string;
   /** Fingerprint of the project's song/reference files, names, and order (what Martini Shot Project saved). */
   assets: string;
+  /** The Direction shot mix, which sets each section's scene type before the story is written. Missing on plans made
+   *  before the planner used it; those are not marked out of date for it. */
+  performanceVsDance?: number;
+  freeformAmount?: number;
+  brollAmount?: number;
 };
 
 export function assetFingerprint(assets: { role: string; checksum: string | null; displayName: string }[]): string {
@@ -111,6 +116,7 @@ export function planInputs(direction: CreativeDirection & { planSeed: number }, 
   return {
     creativeBrief: normalizeBrief(direction.creativeBrief), storyWheel: direction.storyWheel, minLocations: direction.minLocations,
     requestLocationImages: direction.requestLocationImages, seed: direction.planSeed, directorLlm, assets,
+    performanceVsDance: direction.performanceVsDance, freeformAmount: direction.freeformAmount, brollAmount: direction.brollAmount,
   };
 }
 
@@ -125,6 +131,10 @@ export function planFreshness(planned: PlanInputs | null, current: PlanInputs): 
     reasons.push(`Requesting location images was turned ${current.requestLocationImages ? "on" : "off"}.`);
   }
   if (planned.assets !== current.assets) reasons.push("The project's song or reference images changed.");
+  const mix = (inputs: PlanInputs) => [inputs.performanceVsDance, inputs.freeformAmount, inputs.brollAmount].join("/");
+  if (planned.performanceVsDance !== undefined && mix(planned) !== mix(current)) {
+    reasons.push("The shot mix changed (Performance vs Dance, Freeform, or B-roll), and it decides each section's scene type.");
+  }
   if (planned.directorLlm !== current.directorLlm) reasons.push("The director LLM in Settings changed.");
   if (planned.seed !== current.seed) reasons.push("The planning seed changed.");
   return { state: reasons.length ? "stale" : "fresh", reasons };
@@ -137,6 +147,7 @@ export function planWorkflowValues(projectSlugValue: string, inputs: PlanInputs,
     project_name: projectSlugValue, director_llm: inputs.directorLlm, creative_brief: inputs.creativeBrief, story_brief: inputs.creativeBrief,
     story_wheel: inputs.storyWheel, min_locations: inputs.minLocations, request_location_images: inputs.requestLocationImages,
     seed: inputs.seed, reset_plan_cache: reroll,
+    performance_vs_dance: inputs.performanceVsDance ?? -1, freeform_amount: inputs.freeformAmount ?? -1, broll_amount: inputs.brollAmount ?? -1,
   };
 }
 
@@ -223,7 +234,7 @@ export type RawStoryPlan = {
   analysis?: { duration?: unknown; bpm?: unknown; sections?: unknown };
   story?: unknown;
   creative_direction?: unknown;
-  settings?: { story_wheel?: unknown; min_locations?: unknown; request_performer_location_images?: unknown; seed?: unknown };
+  settings?: { story_wheel?: unknown; min_locations?: unknown; request_performer_location_images?: unknown; seed?: unknown; cut_seed?: unknown };
   requested_locations?: unknown;
   director_context?: unknown;
 };
@@ -374,7 +385,7 @@ export function parseStoryPlan(raw: RawStoryPlan, options: { projectPath: string
     creativeDirection: parseCreativeDirection(raw.creative_direction), seed: num(settings.seed) ?? 0,
     minLocations: num(settings.min_locations) ?? 0, requestLocationImages: requestEnabled, performerLocations, requestedLocations,
     suppliedLocations: options.suppliedLocations, warnings: reportWarnings(options.report),
-    planningIssues: planningIssues(raw.director_context),
+    planningIssues: planningIssues(raw.director_context), cutSeed: num(settings.cut_seed),
     rulesOnly: !Object.keys(story).length,
   };
 }

@@ -163,6 +163,8 @@ export type PlanData = {
   /** Unresolved planning problems recorded in director_context.json (an invalid scene type the repair could not fix, a
    *  proposed event the brief did not request). Missing for plans made before they were recorded. */
   planningIssues?: string[];
+  /** story_plan.json settings.cut_seed: automatic cuts vary with it. null for plans made before rerolls redid the cuts. */
+  cutSeed?: number | null;
   /** True when the planner wrote no story beats (no brief, Story Wheel off, no quota): the rules decide everything. */
   rulesOnly: boolean;
 };
@@ -711,7 +713,7 @@ export type SongTimeline = {
   /** The plan's own sections (plan numbering), so an edited draft can show each section's planned scene and action. */
   planSections: { number: number; scene: TimelineScene | null; action: string | null }[];
   /** Direction's timing settings: automatic cuts, and the minimum shot length below which a shot gets a warning. */
-  cutSettings: { targetShotSeconds: number; minShotSeconds: number; maxShotSeconds: number; cutRateVsEnergy: number };
+  cutSettings: { targetShotSeconds: number; minShotSeconds: number; maxShotSeconds: number; cutRateVsEnergy: number; cutSeed?: number | null };
   edit: { allowed: boolean; reason: string | null; applying: boolean; error: string | null };
   /** Edits from a save that failed (kept in timeline.unsaved.json), so they can be restored into the editor. */
   unsaved: { draft: TimelineDraft; savedAt: string } | null;

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  actionValidation, clipMetadata, continuityText, estimateRemaining, findVideo, parseLoaderReport, parseManifest, parsePackageReport,
+  actionValidation, attemptsOnSelectedComfy, clipMetadata, continuityText, estimateRemaining, findVideo, parseLoaderReport, parseManifest, parsePackageReport,
   parseProductionReport, queueTarget, readableProductionError, savedVideo, validateClipIndex, validateQueueCount,
 } from "./production-rules";
 import { applyTemplateValues } from "./workflow-template";
@@ -251,4 +251,15 @@ test("workflow templates: placeholders fill, render package passes as a literal 
   assert.equal(settings.revise.inputs.mode, "Apply shot settings");
   assert.ok(!("llm" in settings) && !("llm" in settings.revise.inputs));
   assert.ok(!JSON.stringify(settings).includes("{{"));
+});
+
+test("interrupted renders are only checked on the ComfyUI selected now", () => {
+  const local = { id: "local", remote_endpoint: null };
+  const oldPod = { id: "old", remote_endpoint: "https://2imw3gn1k5am5l-8188.proxy.runpod.net" };
+  const pod = { id: "pod", remote_endpoint: "https://vfssmn4p8dr7zg-8188.proxy.runpod.net" };
+  const rows = [local, oldPod, pod];
+  // remote selected: never the local ComfyUI, never an earlier pod
+  assert.deepEqual(attemptsOnSelectedComfy(rows, "https://VFSSMN4P8DR7ZG-8188.proxy.runpod.net/", "http://127.0.0.1:8188").map((row) => row.id), ["pod"]);
+  // This PC selected: only local attempts
+  assert.deepEqual(attemptsOnSelectedComfy(rows, "http://127.0.0.1:8188", "http://127.0.0.1:8188/").map((row) => row.id), ["local"]);
 });

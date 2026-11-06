@@ -9,7 +9,19 @@ export const FPS = 24;
 
 export type AnalysisSection = { start: number; end: number; beatStart: number; beatEnd: number; label: string; role: string; energy: number; loudness: number };
 export type SongAnalysis = { duration: number; bpm: number | null; beats: number[]; sections: AnalysisSection[] };
-export type CutSettings = { targetShotSeconds: number; minShotSeconds: number; maxShotSeconds: number; cutRateVsEnergy: number };
+/** cutSeed: the plan's cut seed (story_plan.json settings.cut_seed). Absent or null = the original fixed cuts. */
+export type CutSettings = { targetShotSeconds: number; minShotSeconds: number; maxShotSeconds: number; cutRateVsEnergy: number; cutSeed?: number | null };
+
+/** mv_auto.cut_unit: a deterministic number in [0, 1) for (plan seed, section, slot), integer-only so both match. */
+export function cutUnit(seed: number, section: number, k: number): number {
+  let x = ((seed >>> 0) ^ Math.imul(section, 0x9E3779B1) ^ Math.imul(k, 0x85EBCA77)) >>> 0;
+  x = (x ^ (x >>> 16)) >>> 0;
+  x = Math.imul(x, 0x7FEB352D) >>> 0;
+  x = (x ^ (x >>> 15)) >>> 0;
+  x = Math.imul(x, 0x846CA68B) >>> 0;
+  x = (x ^ (x >>> 16)) >>> 0;
+  return x / 4294967296;
+}
 
 const num = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
 
@@ -78,10 +90,12 @@ function capShots(input: number[], end: number, bars: number[], minimum: number,
 }
 
 /** mv_auto._cut_points: shot starts inside a section, roughly equal lengths on bar lines, shorter when the music is hotter. */
-export function sectionCuts(section: AnalysisSection, beats: number[], settings: CutSettings): number[] {
+export function sectionCuts(section: AnalysisSection, beats: number[], settings: CutSettings, number = 0): number[] {
   const { targetShotSeconds: target, minShotSeconds: minimum, maxShotSeconds: maximum, cutRateVsEnergy: cutRate } = settings;
+  const seed = typeof settings.cutSeed === "number" ? settings.cutSeed : null;
   const length = section.end - section.start;
-  const shotLength = Math.max(minimum, target * (1 - 0.5 * cutRate * (section.energy - 0.5) * 2));
+  let shotLength = Math.max(minimum, target * (1 - 0.5 * cutRate * (section.energy - 0.5) * 2));
+  if (seed !== null) shotLength = Math.max(minimum, shotLength * (0.7 + 0.6 * cutUnit(seed, number, 0)));
   let count = Math.max(1, pyRound(length / shotLength));
   while (count > 1 && length / count < minimum) count -= 1;
   const bars: number[] = [];
@@ -89,7 +103,8 @@ export function sectionCuts(section: AnalysisSection, beats: number[], settings:
   if (!bars.length) bars.push(section.start);
   let starts = [section.start];
   for (let k = 1; k < count; k++) {
-    const goal = section.start + (length * k) / count;
+    let goal = section.start + (length * k) / count;
+    if (seed !== null) goal += (cutUnit(seed, number, k) - 0.5) * 0.5 * length / count;
     const bar = closest(bars, goal);
     if (bar - starts[starts.length - 1] >= minimum && section.end - bar >= minimum) starts.push(bar);
   }
@@ -105,7 +120,7 @@ const toFrame = (seconds: number) => pyRound(seconds * FPS);
 export function previewCuts(analysis: SongAnalysis, settings: CutSettings, sceneFor: (section: number) => TimelineScene | null = () => null): SongTimelineShot[] {
   const starts: { start: number; section: number }[] = [];
   analysis.sections.forEach((section, index) => {
-    for (const start of sectionCuts(section, analysis.beats, settings)) starts.push({ start, section: index + 1 });
+    for (const start of sectionCuts(section, analysis.beats, settings, index + 1)) starts.push({ start, section: index + 1 });
   });
   const total = toFrame(analysis.duration);
   const frames: { frame: number; section: number }[] = [];

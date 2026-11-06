@@ -323,3 +323,16 @@ export function readableProductionError(message: string, endpoint: string): stri
 }
 
 export const VALID_TRANSITIONS: readonly string[] = TRANSITIONS;
+
+/** Comparable form of a ComfyUI endpoint (scheme, host, port, path). */
+export function endpointKey(value: string): string {
+  try { return new URL(value).toString().replace(/\/$/, "").toLowerCase(); } catch { return value.trim().toLowerCase(); }
+}
+
+/** Interrupted render attempts that ran on the ComfyUI selected now. An attempt without remote_endpoint ran on This PC.
+ *  Attempts from another ComfyUI (This PC while the remote worker is selected, or an earlier pod) cannot be checked from
+ *  here; they stay interrupted, unchanged, so they can still be recovered once that ComfyUI is selected again. */
+export function attemptsOnSelectedComfy<T extends { remote_endpoint?: string | null }>(rows: T[], selectedEndpoint: string, localUrl: string): T[] {
+  const selected = endpointKey(selectedEndpoint);
+  return rows.filter((row) => endpointKey(row.remote_endpoint || localUrl) === selected);
+}

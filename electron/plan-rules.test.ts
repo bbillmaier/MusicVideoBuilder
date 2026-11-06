@@ -54,6 +54,8 @@ test("02-plan-story uses the installed Martini Shot nodes with named values", ()
     project: ["open", 0], llm: ["llm", 0], creative_brief: inputs.creativeBrief, story_brief: inputs.creativeBrief, story_wheel: true,
     min_locations: 4, request_performer_location_images: true, seed: 1234, reset_plan_cache: false,
     story_system: "STORY", timeline_shot_rules: "SHOTS",
+    // the Direction shot mix sets each section's scene type before the story is written
+    performance_vs_dance: 0.4, freeform_amount: 0, broll_amount: 0.3,
   });
   assert.deepEqual(prompt.report, { class_type: "PreviewAny", inputs: { source: ["plan", 1] } });
   assert.deepEqual(prompt.needs_location_images, { class_type: "PreviewAny", inputs: { source: ["plan", 2] } });
@@ -193,4 +195,20 @@ test("planning issues from director_context.json reach the plan model", () => {
   };
   const plan = parseStoryPlan(raw, { projectPath: "C:\\p", suppliedLocations: [], report: "" });
   assert.deepEqual(plan.planningIssues, ["Section 1: the planner wrote 'Chorus' (a musical role) as the scene type and the repair returned no valid type"]);
+});
+
+test("the shot mix reaches the planner and makes a plan out of date when it changes", () => {
+  const direction = { ...DEFAULT_DIRECTION, planSeed: 7, performanceVsDance: 1 };
+  const inputs = planInputs(direction, PREFERRED_DIRECTOR_LLM, "a");
+  const values = planWorkflowValues("p", inputs, true);
+  assert.equal(values.performance_vs_dance, 1);
+  assert.equal(values.freeform_amount, DEFAULT_DIRECTION.freeformAmount);
+  assert.equal(values.broll_amount, DEFAULT_DIRECTION.brollAmount);
+  assert.equal(values.reset_plan_cache, true);
+  const changed = planFreshness(inputs, planInputs({ ...direction, performanceVsDance: 0.4 }, PREFERRED_DIRECTOR_LLM, "a"));
+  assert.equal(changed.state, "stale");
+  assert.match(changed.reasons.join(" "), /shot mix changed/);
+  // plans made before the planner used the shot mix are not marked out of date for it
+  const { performanceVsDance: _p, freeformAmount: _f, brollAmount: _b, ...legacy } = inputs;
+  assert.equal(planFreshness(legacy, planInputs({ ...direction, performanceVsDance: 0.4 }, PREFERRED_DIRECTOR_LLM, "a")).state, "fresh");
 });

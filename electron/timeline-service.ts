@@ -170,6 +170,7 @@ export async function songTimeline(projectId: unknown): Promise<SongTimeline> {
     cutSettings: {
       targetShotSeconds: plans.direction.targetShotSeconds, minShotSeconds: plans.direction.minShotSeconds,
       maxShotSeconds: plans.direction.maxShotSeconds, cutRateVsEnergy: plans.direction.cutRateVsEnergy,
+      cutSeed: plans.plan?.cutSeed ?? null,
     },
     analysis: { running: running.has(project.id), error: failures.get(project.id) ?? null, canStart: !blocker && !running.has(project.id) && !plans.plan, blocker },
     edit: { allowed: !editReason, reason: editReason, applying, error: applyFailures.get(project.id) ?? null },
@@ -215,7 +216,7 @@ export async function songTimeline(projectId: unknown): Promise<SongTimeline> {
     shotSource = "timeline";
     notes.push("Your saved timeline. Shots marked Auto get their scene type and transition from the plan and the director when the prompt package is written.");
   } else if (shotSource === "preview") {
-    shots = previewCuts(analysis, plans.direction, (number) => sections[number - 1]?.scene ?? null);
+    shots = previewCuts(analysis, base.cutSettings, (number) => sections[number - 1]?.scene ?? null);
     notes.push(plans.plan
       ? "Automatic cuts from your Direction timing settings. Long shots are split into render clips, and the director chooses the remaining scene types and transitions, when the prompt package is written."
       : "Automatic cuts from the song analysis and your Direction timing settings. The director plan adds scene types and actions.");

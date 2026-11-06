@@ -150,6 +150,14 @@ export function comfyWebSocketEndpoint(value: string): string { const url = new 
 /** Backwards compatible name for callers that mean This PC. */
 export const localEndpoint = (value: string) => comfyEndpoint(value, "local");
 
+/** The ComfyUI chosen in Settings (This PC or the remote worker). Every call that is not tied to a specific earlier run
+ *  uses it, so nothing contacts the local ComfyUI while the remote worker is selected. */
+export async function selectedComfyEndpoint(): Promise<{ endpoint: string; remote: boolean }> {
+  const settings = await getMachineSettings();
+  const remote = settings.executionDestination === "remote";
+  return { endpoint: comfyEndpoint(remote ? settings.remoteComfyUrl : settings.comfyUrl, remote ? "remote" : "local"), remote };
+}
+
 async function request(endpoint: string, route: string, init?: RequestInit): Promise<Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8000);
@@ -218,8 +226,7 @@ type HistoryItem = { status?: { status_str?: string; messages?: unknown[] }; out
 
 /** Prompt IDs ComfyUI currently lists as running or pending (any client). */
 export async function comfyQueueIds(endpointOverride?: string): Promise<{ running: string[]; pending: string[] }> {
-  const settings = await getMachineSettings();
-  const endpoint = endpointOverride ? comfyEndpoint(endpointOverride, "remote") : comfyEndpoint(settings.comfyUrl, "local");
+  const endpoint = endpointOverride ? comfyEndpoint(endpointOverride, "remote") : (await selectedComfyEndpoint()).endpoint;
   const response = await request(endpoint, "/queue");
   if (!response.ok) throw new Error(`Could not read the ComfyUI queue (HTTP ${response.status}).`);
   const queue = await response.json() as { queue_running?: unknown[][]; queue_pending?: unknown[][] };
@@ -228,7 +235,7 @@ export async function comfyQueueIds(endpointOverride?: string): Promise<{ runnin
 
 /** ComfyUI's record of one prompt, or null when it has no history for it. */
 export async function comfyHistory(promptId: string, endpointOverride?: string): Promise<{ status: "success" | "error" | "unknown"; outputs: unknown; messages: unknown[] } | null> {
-  const endpoint = endpointOverride ? comfyEndpoint(endpointOverride, "remote") : localEndpoint((await getMachineSettings()).comfyUrl);
+  const endpoint = endpointOverride ? comfyEndpoint(endpointOverride, "remote") : (await selectedComfyEndpoint()).endpoint;
   const response = await request(endpoint, `/history/${encodeURIComponent(promptId)}`);
   if (!response.ok) throw new Error(`Could not read ComfyUI history (HTTP ${response.status}).`);
   const item = (await response.json() as Record<string, HistoryItem>)[promptId];
@@ -377,10 +384,11 @@ function skippedCleanup(): CleanupEvidence {
 export async function runWorkflowTemplate(isDevelopment: boolean, name: string, values: Record<string, unknown>, projectId?: string,
   build?: (template: WorkflowTemplate) => Record<string, unknown>, options: WorkflowOptions = {}): Promise<WorkflowRun> {
   const settings = await getMachineSettings();
-  const remote = !options.endpoint && settings.executionDestination === "remote" && Boolean(projectId);
+  // Remote whenever the remote worker is selected; only project workflows stage files (the connectivity test has none).
+  const remote = !options.endpoint && settings.executionDestination === "remote";
   const endpoint = options.endpoint ? comfyEndpoint(options.endpoint, "remote") : remote ? comfyEndpoint(settings.remoteComfyUrl, "remote") : comfyEndpoint(settings.comfyUrl, "local");
   let staging: RemoteRenderStaging | null = null;
-  if (remote) {
+  if (remote && projectId) {
     const stagedProjectId = projectId!;
     const row = db().prepare("SELECT slug, project_path FROM martini_projects WHERE id = ?").get(stagedProjectId) as { slug?: string; project_path?: string } | undefined;
     if (!row?.slug || !row.project_path) throw new Error("The local project record is unavailable for remote staging.");
@@ -456,5 +464,5 @@ export async function runWorkflowTemplate(isDevelopment: boolean, name: string, 
 export async function freeComfyMemory(endpointOverride?: string): Promise<CleanupEvidence> {
   const settings = await getMachineSettings();
   if (!settings.vramCleanup) return skippedCleanup();
-  return releaseMemory(endpointOverride ? comfyEndpoint(endpointOverride, "remote") : comfyEndpoint(settings.comfyUrl, "local"));
+  return releaseMemory(endpointOverride ? comfyEndpoint(endpointOverride, "remote") : (await selectedComfyEndpoint()).endpoint);
 }

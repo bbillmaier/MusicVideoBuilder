@@ -653,8 +653,12 @@ class MiniMaxH3AutoDirector:
     @staticmethod
     def _plan_story(llm, analysis, refs, brief, lyrics_story, words, seed, story_wheel=False,
                     propose_story_locations=False, min_locations=0, creative_direction="", cached=None,
-                    dance_style="", section_shots=None, system=STORY_SYSTEM, shot_rules=None):
-        """One LLM call for per-section story beats. Returns ({} , []) when neither option is on."""
+                    dance_style="", section_shots=None, system=STORY_SYSTEM, shot_rules=None,
+                    section_scenes=None, previous_plan=None, temperature=0.7):
+        """One LLM call for per-section story beats. Returns ({} , []) when neither option is on.
+
+        section_scenes: scene types already set from the Direction shot mix; they are kept whatever the planner writes.
+        previous_plan / temperature: a reroll shows the replaced beats and samples a little hotter, so it is new."""
         if not _clean(brief) and not lyrics_story and not story_wheel and not min_locations and not creative_direction:
             return {}, []
         if llm is None:
@@ -676,11 +680,18 @@ class MiniMaxH3AutoDirector:
                                        {r['name']: r['location_evidence'] for r in refs
                                         if r['kind'] == 'Location' and r.get('location_evidence')}, story_wheel,
                                        propose_story_locations, min_locations, creative_direction, dance_style,
-                                       section_shots, shot_rules or TIMELINE_SHOT_RULES)
-        response = cached("Story Wheel" if story_wheel else "story", message, {}, 0.7,
-                          max(900, 160 * len(sections) if story_wheel else 100 + 80 * len(sections)), seed, system) \
-            if cached else run_llm(llm, message, {}, 0.7, max(900, 160 * len(sections) if story_wheel else 100 + 80 * len(sections)), seed, system)
+                                       section_shots, shot_rules or TIMELINE_SHOT_RULES, section_scenes, previous_plan)
+        tokens = max(900, 160 * len(sections) if story_wheel else 100 + 80 * len(sections))
+        response = cached("Story Wheel" if story_wheel else "story", message, {}, temperature, tokens, seed, system) \
+            if cached else run_llm(llm, message, {}, temperature, tokens, seed, system)
         story, warnings = parse_story(response, len(sections), [r["name"] for r in refs if r["kind"] == "Location"])
+        for number, scene in (section_scenes or {}).items():
+            beat = story.get(number)
+            if beat is not None:  # the shot mix decides the type; the planner only writes the beat
+                if beat.get("scene") and beat["scene"] != scene:
+                    warnings.append(f"Story section {number}: the planner wrote {beat['scene']}; the shot mix keeps {scene}.")
+                beat.update(scene=scene, scene_source="direction")
+                beat.pop("scene_raw", None)
         # A musical role written as the scene type ("scene: Chorus") gets one focused repair; anything still invalid
         # stays visible as a planning issue and the production rules choose that section's scene type.
         warnings += repair_story_scenes(

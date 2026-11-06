@@ -383,6 +383,59 @@ class StoryAndSceneContract(unittest.TestCase):
         self.assertTrue(event_requested("a lightning strike", brief)[0])
 
 
+class CompleteReroll(unittest.TestCase):
+    """A reroll redoes the whole plan: new story, new scene types from the shot mix, new automatic cuts."""
+
+    SECTIONS = [{"start": 0, "end": 10, "role": "intro", "energy": 0.3}] + [
+        {"start": 10 * n, "end": 10 * n + 10, "role": role, "energy": 0.7}
+        for n, role in enumerate(["verse", "chorus", "verse", "chorus", "bridge", "chorus", "break"], start=1)] + [
+        {"start": 80, "end": 90, "role": "outro", "energy": 0.3}]
+
+    def test_full_performance_means_every_verse_bridge_and_chorus_performs(self):
+        from mv_story import assign_section_scenes
+        for seed in (1, 1959527090, 3532593991):
+            scenes = assign_section_scenes(self.SECTIONS, seed, 1.0, 0.0, 0.3)
+            for number, section in enumerate(self.SECTIONS, start=1):
+                if section["role"] in ("verse", "bridge", "chorus"):
+                    self.assertEqual(scenes[number], "Performance", (seed, number))
+            self.assertEqual(scenes[8], "Dance", "a break still dances")
+
+    def test_a_new_seed_gives_a_new_mix(self):
+        from mv_story import assign_section_scenes
+        mixes = {tuple(assign_section_scenes(self.SECTIONS, seed, 0.5, 0.3, 0.3).values()) for seed in range(8)}
+        self.assertGreater(len(mixes), 1)
+
+    def test_timeline_marks_and_missing_performer_win(self):
+        from mv_story import assign_section_scenes, timeline_section_marks
+        marks = timeline_section_marks(self.SECTIONS, [{"start": 10, "scene": "Freeform"}, {"start": 15, "scene": "Freeform"},
+                                                       {"start": 20, "scene": "Dance"}, {"start": 25, "scene": None}])
+        self.assertEqual(marks, {2: "Freeform"}, "only a section whose shots all share one marked type")
+        self.assertEqual(assign_section_scenes(self.SECTIONS, 1, 1.0, 0, 0, marked=marks)[2], "Freeform")
+        self.assertEqual(set(assign_section_scenes(self.SECTIONS, 1, 1.0, 0, 0, has_subject=False).values()), {"B-roll"})
+
+    def test_story_prompt_fixes_scene_types_and_shows_the_replaced_plan(self):
+        message = build_story_message(self.SECTIONS[:2], ["alley"], [], "", {}, True,
+                                      section_scenes={1: "B-roll", 2: "Performance"},
+                                      previous_plan=["Footwork in sharp heel taps", "Arm patterns sweep across screens"])
+        self.assertIn("scene: Performance (set by the user's shot mix)", message)
+        self.assertIn("Write exactly that scene type", message)
+        self.assertIn("This is a reroll", message)
+        self.assertIn("- Footwork in sharp heel taps", message)
+        self.assertNotIn("footwork, arm patterns, isolations, level changes, traveling, and held poses", message)
+
+    def test_automatic_cuts_change_with_the_seed_and_old_plans_keep_theirs(self):
+        from mv_auto import _cut_points
+        beats = np.arange(0.0, 60.0, 0.5)
+        section = {"start": 10.0, "end": 38.0, "energy": 0.8, "beat_start": 20, "beat_end": 76}
+        legacy = _cut_points(section, beats, 8.0, 3.0, 0.5, 10.0)
+        self.assertEqual(_cut_points(section, beats, 8.0, 3.0, 0.5, 10.0, None, 4), legacy)
+        variants = {tuple(_cut_points(section, beats, 8.0, 3.0, 0.5, 10.0, seed, 4)) for seed in range(12)}
+        self.assertGreater(len(variants), 1)
+        for cuts in variants:  # still bar-aligned, ordered, and within the minimum shot length
+            self.assertEqual(list(cuts), sorted(cuts))
+            self.assertTrue(all(b - a >= 3.0 for a, b in zip(cuts, list(cuts[1:]) + [38.0])))
+
+
 class MotifsAndSurrealism(unittest.TestCase):
     """Acceptance 6."""
 

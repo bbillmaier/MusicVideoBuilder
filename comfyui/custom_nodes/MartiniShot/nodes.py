@@ -16,7 +16,7 @@ from .mv_auto import analyze_song, plan_auto_shots
 from .mv_auto_nodes import MiniMaxH3AutoDirector
 from .mv_nodes import MiniMaxH3MusicVideoDirector, MiniMaxH3MusicVideoPromptRevision, MiniMaxH3MusicVideoSegmentLoader
 from .mv_story import (CREATIVE_BRIEF_SYSTEM, STORY_SYSTEM, TIMELINE_SHOT_RULES, build_creative_brief_message, parse_story,
-                       prompt_text, repair_story_scenes, timeline_shot_rows,
+                       assign_section_scenes, prompt_text, repair_story_scenes, timeline_section_marks, timeline_shot_rows,
                        creative_direction_text, parse_creative_brief)
 from .dance_nodes import run_llm
 from .director_context import attach_context_to_shots, build_director_context, required_event_report
@@ -62,6 +62,10 @@ class MartiniShotRenderResolution:
         height = max(multiple, round(math.sqrt(pixels / ratio) / multiple) * multiple)
         width = max(multiple, round(height * ratio / multiple) * multiple)
         return int(width), int(height)
+
+
+def _clean_beat(beat) -> str:
+    return " ".join(str((beat or {}).get("beat") or "").split())[:240] if isinstance(beat, dict) else ""
 
 
 def _cached(lines, llm, stage, message, temperature, tokens, seed, system):
@@ -216,7 +220,11 @@ class MartiniShotPlanStory:
                              "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFF}),
                              "reset_plan_cache": ("BOOLEAN", {"default": False})},
                 "optional": {"story_system": ("STRING", {**MULTILINE, "tooltip": PROMPT_TOOLTIP}),
-                             "timeline_shot_rules": ("STRING", {**MULTILINE, "tooltip": PROMPT_TOOLTIP})}}
+                             "timeline_shot_rules": ("STRING", {**MULTILINE, "tooltip": PROMPT_TOOLTIP}),
+                             # The Direction shot mix. Below 0 (older workflows) = the planner chooses scene types.
+                             "performance_vs_dance": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 1.0, "step": 0.05}),
+                             "freeform_amount": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 1.0, "step": 0.05}),
+                             "broll_amount": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 1.0, "step": 0.05})}}
 
     RETURN_TYPES = ("MARTINI_STORY_PLAN", "STRING", "BOOLEAN")
     RETURN_NAMES = ("story_plan", "report", "needs_location_images")
@@ -225,10 +233,18 @@ class MartiniShotPlanStory:
 
     def plan(self, project, llm, creative_brief="", story_brief="", story_wheel=True, min_locations=0,
              request_performer_location_images=True, seed=0, reset_plan_cache=False, story_system="",
-             timeline_shot_rules=""):
+             timeline_shot_rules="", performance_vs_dance=-1.0, freeform_amount=-1.0, broll_amount=-1.0):
         project = copy.deepcopy(project)
         lines = []
+        previous_plan = []
         if reset_plan_cache:
+            # A reroll is a complete new plan: the replaced beats are shown to the planner so it does not paraphrase them.
+            try:
+                previous = read_state(project, "story_plan.json").get("story") or {}
+                previous_plan = [_clean_beat(beat) for _, beat in sorted(previous.items(), key=lambda item: int(item[0]))
+                                 if _clean_beat(beat)]
+            except (OSError, ValueError, json.JSONDecodeError):
+                previous_plan = []
             prior = seed
             seed = random.SystemRandom().randint(0, 0xFFFFFFFF)
             lines.append(f"  reset: {clear_cache()}; seed {prior} -> {seed}")
@@ -250,6 +266,13 @@ class MartiniShotPlanStory:
                                0.3, 180, seed + 3, CREATIVE_BRIEF_SYSTEM)
             creative = parse_creative_brief(response, creative_brief)
         direction = creative_direction_text(creative)
+        section_scenes, mix_lines = None, []
+        if min(float(performance_vs_dance), float(freeform_amount), float(broll_amount)) >= 0:
+            section_scenes = assign_section_scenes(
+                analysis["sections"], seed, float(performance_vs_dance), float(freeform_amount), float(broll_amount),
+                any(r["kind"] == "Subject" for r in refs),
+                timeline_section_marks(analysis["sections"], timeline["shots"]) if timeline else None)
+            mix_lines = ["  " + ", ".join(f"section {n}: {scene}" for n, scene in section_scenes.items())]
         story, story_lines = MiniMaxH3AutoDirector._plan_story(
             llm, analysis, refs, story_brief, False, [], seed, bool(story_wheel),
             bool(request_performer_location_images), int(min_locations), direction,
@@ -257,6 +280,8 @@ class MartiniShotPlanStory:
                 _cached(lines, llm, stage, message, temperature, tokens, call_seed, system),
             section_shots=timeline_shot_rows(analysis["sections"], timeline["shots"], timeline["duration"]) if timeline else None,
             system=prompt_text(story_system, STORY_SYSTEM), shot_rules=prompt_text(timeline_shot_rules, TIMELINE_SHOT_RULES),
+            section_scenes=section_scenes, previous_plan=previous_plan or None,
+            temperature=0.85 if reset_plan_cache else 0.7,
         )
         requested = []
         if request_performer_location_images:
@@ -267,6 +292,11 @@ class MartiniShotPlanStory:
         state = _story_state(project, analysis, story, direction, {
             "story_brief": story_brief, "story_wheel": bool(story_wheel), "min_locations": int(min_locations),
             "request_performer_location_images": bool(request_performer_location_images), "seed": seed,
+            # Automatic cuts vary with this seed (mv_auto._cut_points), so a reroll also gives new cuts. Plans made
+            # before this key existed have none and keep their original fixed cuts.
+            "cut_seed": seed,
+            "shot_mix": {"performance_vs_dance": float(performance_vs_dance), "freeform_amount": float(freeform_amount),
+                         "broll_amount": float(broll_amount)} if section_scenes else None,
         }, creative)
         state["requested_locations"] = requested
         if timeline:
@@ -280,6 +310,7 @@ class MartiniShotPlanStory:
         report = "\n".join([f"Martini Shot story plan: {len(analysis['sections'])} song sections."]
                              + (["", "Creative direction:"] + [f"  {line}" for line in direction.splitlines()] + issue_lines
                                 if direction or issue_lines else [])
+                              + (["", "Shot mix (from Direction, seeded by the plan seed):"] + mix_lines if mix_lines else [])
                               + (["", "Required event allocation:"] + event_lines if event_lines else [])
                              + (["", "Story:"] + story_lines if story_lines else [])
                              + (["", "Location observations:"] + evidence_lines if evidence_lines else [])
@@ -582,6 +613,7 @@ class MartiniShotBuildProductionPlan:
             max_shot_seconds=max_shot_seconds, hard_cuts_change_location=bool(hard_cuts_change_location),
             require_performer_location_image=True,
             fixed_shots=resolved_plan.get("timeline_shots") or None,
+            cut_seed=(resolved_plan.get("settings") or {}).get("cut_seed"),
         )
         context = copy.deepcopy(resolved_plan.get("director_context", {}))
         attach_context_to_shots(shots, context)

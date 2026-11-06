@@ -11,10 +11,12 @@ from typing import Any
 
 try:
     from .dance_writer import load_styles, strip_reasoning
+    from .mv_auto import cut_unit
     from .mv_plan import format_time
     from .music_energy import energy_label
 except ImportError:  # imported as top-level modules by the tests
     from dance_writer import load_styles, strip_reasoning
+    from mv_auto import cut_unit
     from mv_plan import format_time
     from music_energy import energy_label
 
@@ -27,7 +29,7 @@ Rules:
 - Prefer the location names you are given, written exactly. Name a new place (a short noun phrase) only when none fits or none are given, and reuse the exact same name whenever the story returns to a place.
 - scene is how the section is filmed and must be exactly one of: Dance (the performer dances), Performance (sings to camera), Freeform (any other action you describe), B-roll (no performer; the place itself). Never write the song's musical role (intro, verse, chorus, bridge, break, outro) as the scene; the role is already given.
 - Each beat is ONE short sentence of concrete, filmable action. Never describe faces, hair color, or outfit design.
-- For Dance beats, name a concrete, style-appropriate movement phrase with readable body action. Vary movement families across the video: footwork, arm patterns, isolations, level changes, traveling, and held poses. A spin, turn, or rotation is a brief accent or transition, never the whole dance beat, unless the user explicitly requests it.
+- For Dance beats, name a concrete, style-appropriate movement phrase with readable body action. Choose each section's movement idea from its lyrics, place, and energy, and vary movement families across the video in no fixed order (footwork, arm patterns, isolations, level changes, traveling, or held poses are examples, not a sequence). A spin, turn, or rotation is a brief accent or transition, never the whole dance beat, unless the user explicitly requests it.
 - The beats form one continuous video with a beginning, a development, and a payoff. A sustained activity (a long run, a held pose, an extended dance) may continue across sections when it fits; a section does not need a new action, and a performance montage does not need a plot turn in every section. Loud sections should feel like peaks, which can come from stillness or expression as well as large movement.
 - A vibe, genre, or theme is atmosphere, not an event. Do not add events, chases, or plot facts the user did not ask for.
 - CONTRAST: write "none" normally. If deliberately contrasting the music with the action, state the choice and its narrative purpose briefly. Declare it now so shot expansion preserves it.
@@ -72,6 +74,43 @@ def prompt_text(value, default: str) -> str:
     return text or default
 
 
+def assign_section_scenes(sections: list[dict[str, Any]], seed: int, performance_vs_dance: float, freeform_amount: float,
+                          broll_amount: float, has_subject: bool = True,
+                          marked: dict[int, str] | None = None) -> dict[int, str]:
+    """Each section's scene type from the Direction shot mix, before the story is written, so the sliders decide the
+    mix (100% Performance means every verse, bridge, and chorus is Performance) and a reroll's new seed gives a new mix.
+    Same section-level rules as plan_auto_shots: intros and outros may be B-roll, verses/bridges/choruses are
+    Performance with performance_vs_dance, verses/bridges may be Freeform, everything else dances. marked: scene types
+    the user fixed for a whole section on the timeline; they win."""
+    scenes = {}
+    for number, section in enumerate(sections, start=1):
+        role = str(section.get("role", "")).lower()
+        if marked and marked.get(number) in STORY_SCENES:
+            scene = marked[number]
+        elif not has_subject:
+            scene = "B-roll"
+        elif role in ("intro", "outro") and cut_unit(seed, number, 1001) < 0.4 + 0.6 * broll_amount:
+            scene = "B-roll"
+        elif role in ("verse", "bridge", "chorus") and cut_unit(seed, number, 1002) < performance_vs_dance:
+            scene = "Performance"
+        elif role in ("verse", "bridge") and cut_unit(seed, number, 1003) < freeform_amount:
+            scene = "Freeform"
+        else:
+            scene = "Dance"
+        scenes[number] = scene
+    return scenes
+
+
+def timeline_section_marks(sections: list[dict[str, Any]], shots: list[dict[str, Any]]) -> dict[int, str]:
+    """Sections whose shots the user all marked with one scene type on the timeline."""
+    marks: dict[int, set] = {}
+    for shot in shots:
+        number = next((n for n, section in enumerate(sections, start=1)
+                       if section["start"] - 1e-6 <= float(shot["start"]) < section["end"] - 1e-6), len(sections))
+        marks.setdefault(number, set()).add(shot.get("scene") or "")
+    return {number: next(iter(values)) for number, values in marks.items() if len(values) == 1 and next(iter(values))}
+
+
 def timeline_shot_rows(sections: list[dict[str, Any]], shots: list[dict[str, Any]], duration: float) -> dict[int, str]:
     """For each section number, a one-line list of the user's fixed shots inside it (time span, and the scene type or
     transition the user chose, if any), for the story LLM. Shots come from timeline.json: start, scene, transition."""
@@ -97,7 +136,10 @@ def build_story_message(sections: list[dict[str, Any]], locations: list[str], ou
                          evidence: dict[str, dict[str, list[str]]] | None = None,
                          story_wheel: bool = False, propose_story_locations: bool = False,
                          min_locations: int = 0, creative_direction: str = "", dance_style: str = "",
-                         section_shots: dict[int, str] | None = None, shot_rules: str = TIMELINE_SHOT_RULES) -> str:
+                         section_shots: dict[int, str] | None = None, shot_rules: str = TIMELINE_SHOT_RULES,
+                         section_scenes: dict[int, str] | None = None, previous_plan: list[str] | None = None) -> str:
+    """section_scenes: scene types already set from the Direction shot mix (assign_section_scenes); the planner writes
+    beats for them. previous_plan: the beats of the plan being rerolled, so the new plan is not a paraphrase of it."""
     parts = []
     if brief.strip():
         parts.append(f"The story (highest priority): {' '.join(brief.split())}")
@@ -141,10 +183,21 @@ def build_story_message(sections: list[dict[str, Any]], locations: list[str], ou
             row += f'. Lyrics: "{lyrics_by_section[index]}"'
         if section_shots and section_shots.get(index):
             row += f". {section_shots[index]}"
+        if section_scenes and section_scenes.get(index):
+            row += f". scene: {section_scenes[index]} (set by the user's shot mix)"
         rows.append(row)
     if section_shots:
         parts.append(shot_rules)
+    if section_scenes:
+        parts.append("Each section's scene type is already set from the user's Direction shot mix and is shown on its "
+                     "row. Write exactly that scene type, and a beat that suits it: a Performance beat is sung to the "
+                     "camera, a Dance beat is a movement phrase, a Freeform beat is a non-dance action, a B-roll beat "
+                     "shows the place without the performer.")
     parts.append("Song sections:\n" + "\n".join(rows))
+    if previous_plan:
+        parts.append("This is a reroll. The plan being replaced is below. Write a substantially different video: new "
+                     "actions, imagery, staging, and story arc, and a different use of the locations where the list "
+                     "allows. Do not reuse or paraphrase these beats:\n" + "\n".join(f"- {beat}" for beat in previous_plan))
     if story_wheel:
         parts.append("Build a connected Story Wheel. phase names each section's dramatic job; starts follows the prior "
                      "section's end when relevant; turn is the section's meaningful change, which may be a visual or "

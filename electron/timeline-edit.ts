@@ -239,7 +239,7 @@ export function automaticShots(input: TimelineDraft, beats: number[], settings: 
       beatEnd: index === draft.sections.length - 1 ? beats.length : beatIndex(section.end), label: section.label, role: section.role,
       energy: section.energy, loudness: section.loudness,
     };
-    for (const start of sectionCuts(analysis, beats, settings)) {
+    for (const start of sectionCuts(analysis, beats, settings, index + 1)) {
       const time = index === 0 && start === section.start ? 0 : frameTime(start);
       if (!starts.length || time - starts[starts.length - 1] >= MIN_SHOT_SECONDS - EPS) starts.push(time);
     }

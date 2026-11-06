@@ -342,7 +342,8 @@ app.whenReady().then(() => {
   ipcMain.handle("martini:post-worker-info", () => workerInfo(true));
   ipcMain.handle("martini:open-comfyui", async () => {
     const settings = await getMachineSettings();
-    await shell.openExternal(comfyEndpoint(settings.comfyUrl, "local"));
+    // Open the ComfyUI the app is using: the remote worker when it is selected, otherwise This PC.
+    await shell.openExternal(settings.executionDestination === "remote" ? comfyEndpoint(settings.remoteComfyUrl, "remote") : comfyEndpoint(settings.comfyUrl, "local"));
   });
   createWindow();
 

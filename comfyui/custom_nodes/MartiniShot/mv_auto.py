@@ -165,11 +165,30 @@ def _cap_shots(starts: list[float], end: float, bars: list[float], minimum: floa
     return starts
 
 
+def cut_unit(seed: int, section: int, k: int) -> float:
+    """A deterministic number in [0, 1) for (plan seed, section, slot). Integer-only, so the app's TypeScript copy
+    (timeline-rules.cutUnit) gives the same value and its timeline preview matches the cuts Produce makes."""
+    mask = 0xFFFFFFFF
+    x = (int(seed) & mask) ^ ((section * 0x9E3779B1) & mask) ^ ((k * 0x85EBCA77) & mask)
+    x ^= x >> 16
+    x = (x * 0x7FEB352D) & mask
+    x ^= x >> 15
+    x = (x * 0x846CA68B) & mask
+    x ^= x >> 16
+    return x / 4294967296
+
+
 def _cut_points(section: dict[str, Any], beats: np.ndarray, target: float, minimum: float, cut_rate: float,
-                maximum: float = 0.0) -> list[float]:
-    """Shot starts inside a section: roughly equal lengths, on bar lines, shorter when the music is hotter."""
+                maximum: float = 0.0, cut_seed: int | None = None, number: int = 0) -> list[float]:
+    """Shot starts inside a section: roughly equal lengths, on bar lines, shorter when the music is hotter.
+
+    cut_seed (the plan seed of plans made since rerolls redo the cuts): each section's shot length varies by -30%..+30%
+    and each cut moves up to a quarter shot toward a different bar, so a reroll gives new cuts. None = the original,
+    fixed cuts (older plans keep them)."""
     length = section["end"] - section["start"]
     shot_length = max(minimum, target * (1.0 - 0.5 * cut_rate * (section["energy"] - 0.5) * 2))
+    if cut_seed is not None:
+        shot_length = max(minimum, shot_length * (0.7 + 0.6 * cut_unit(cut_seed, number, 0)))
     count = max(1, round(length / shot_length))
     while count > 1 and length / count < minimum:
         count -= 1
@@ -177,6 +196,8 @@ def _cut_points(section: dict[str, Any], beats: np.ndarray, target: float, minim
     starts = [section["start"]]
     for k in range(1, count):
         goal = section["start"] + length * k / count
+        if cut_seed is not None:
+            goal += (cut_unit(cut_seed, number, k) - 0.5) * 0.5 * length / count
         bar = min(bars, key=lambda t: abs(t - goal))
         if bar - starts[-1] >= minimum and section["end"] - bar >= minimum:
             starts.append(bar)
@@ -218,11 +239,13 @@ def plan_auto_shots(analysis: dict[str, Any], refs: list[dict[str, Any]], *, see
                     broll_invented_chance: float = 0.0,
                     selected_actions: dict[int, dict[str, str]] | None = None,
                     require_performer_location_image: bool = False,
-                    fixed_shots: list[dict[str, Any]] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
+                    fixed_shots: list[dict[str, Any]] | None = None,
+                    cut_seed: int | None = None) -> tuple[list[dict[str, Any]], list[str]]:
     """Shot dicts in Music Video Shot format, plus a 'why' line per shot.
 
     story: optional {section number: {scene, location, beat}} from the story planner; it overrides the rules for
     location, scene type, and description wherever it is valid.
+    cut_seed: varies the automatic cuts per plan (see _cut_points); None keeps the original fixed cuts.
     fixed_shots: optional [{start, scene, transition}] from the user's song timeline. Its cuts replace the timing rules
     (every section start must be one), and a shot's scene or transition, when set, overrides everything else.
     """
@@ -315,7 +338,8 @@ def plan_auto_shots(analysis: dict[str, Any], refs: list[dict[str, Any]], *, see
             starts = [float(shot["start"]) for shot in fixed_shots
                       if section["start"] - 1e-3 <= float(shot["start"]) < section["end"] - 1e-3] or [section["start"]]
         else:
-            starts = _cut_points(section, beats, target_shot_seconds, min_shot_seconds, cut_rate_vs_energy, max_shot_seconds)
+            starts = _cut_points(section, beats, target_shot_seconds, min_shot_seconds, cut_rate_vs_energy, max_shot_seconds,
+                                 cut_seed, int(section.get("orig", index + 1)))
         for k, start in enumerate(starts):
             # EXPERIMENTAL lyric triggers: a sung phrase in this shot's window switches to its reference for the
             # rest of the section; a switch mid-section is a hard cut
