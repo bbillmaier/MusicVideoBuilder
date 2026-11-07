@@ -24,6 +24,7 @@ import {
 } from "./production-service";
 import {
   configureResultsService, exportReport, finalOutputFolder, finalVideoFile, finalVideoPath, reportText, resultsOverview, startStitch,
+  startTestStitch, testVideoFile, testVideoPath,
 } from "./results-service";
 import {
   cancelPostProcessing, configurePostProcessService, postArtifactFile, postProcessOverview, savePostSettings, selectPostVersion, startPostProcessing, workerInfo,
@@ -174,6 +175,11 @@ app.whenReady().then(() => {
       const finalId = decodeURIComponent(url.pathname.slice(1));
       if (/^[0-9a-f-]{36}$/i.test(finalId)) file = finalVideoFile(finalId);
     }
+    else if (url.hostname === "test") {
+      // martini-asset://test/<testId>/<n>: only the n-th recorded video of that test batch, inside its project folder.
+      const [testId, n] = url.pathname.slice(1).split("/").map(decodeURIComponent);
+      if (/^[0-9a-f-]{36}$/i.test(testId ?? "") && /^\d{1,3}$/.test(n ?? "")) file = testVideoFile(testId, Number(n));
+    }
     else if (url.hostname === "post") {
       // martini-asset://post/<attemptId>: only the recorded output of a succeeded post-processing attempt, inside its project.
       const attemptId = decodeURIComponent(url.pathname.slice(1));
@@ -310,6 +316,12 @@ app.whenReady().then(() => {
   // Results (Ticket 06): main re-validates the project, the final-video record, and that every path is inside the project folder.
   ipcMain.handle("martini:results-overview", (_event, projectId: unknown) => resultsOverview(projectId));
   ipcMain.handle("martini:results-stitch", (_event, projectId: unknown) => startStitch(projectId));
+  ipcMain.handle("martini:results-stitch-tests", (_event, projectId: unknown) => startTestStitch(projectId));
+  ipcMain.handle("martini:results-open-test", async (_event, projectId: unknown, testId: unknown, n: unknown) => {
+    const error = await shell.openPath(testVideoPath(projectId, testId, n));
+    if (error) throw new Error(error);
+  });
+  ipcMain.handle("martini:results-reveal-test", (_event, projectId: unknown, testId: unknown, n: unknown) => shell.showItemInFolder(testVideoPath(projectId, testId, n)));
   ipcMain.handle("martini:results-open-video", async (_event, projectId: unknown, finalId: unknown) => {
     const error = await shell.openPath(finalVideoPath(projectId, finalId));
     if (error) throw new Error(error);

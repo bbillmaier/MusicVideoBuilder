@@ -22,7 +22,7 @@ from typing import Any
 from .postprocess_core import (
     NODE_CONTRACT_VERSION, POSTPROCESS_API_VERSION, PostProcessConfigError, check_job_mode, check_memory_budget, check_output_target,
     INTERPOLATION_FRAME_TOLERANCE, encode_command, fps_fraction, fps_text, interpolated_frames, normalization_plan, normalize_command, parse_selection, resolve_inside,
-    summarize_face_frames, timing_problems, worker_vram_mode,
+    summarize_face_frames, test_runs, test_video_name, timing_problems, worker_vram_mode,
 )
 from .ref2va_nodes import CATEGORY
 
@@ -382,89 +382,162 @@ class MartiniShotFinalizeSelectedVideo:
         return float("nan")
 
     def stitch(self, render_package, clip_selection, output_name, overwrite):
-        import imageio_ffmpeg
-        import soundfile
         from .video_nodes import load_manifest, load_song, resolve_folder
 
         folder = resolve_folder(render_package["folder"])
         manifest = load_manifest(folder)
         segments = manifest["segments"]
         chosen = parse_selection(clip_selection, [int(segment["index"]) for segment in segments])
-        root = folder.resolve()
-        clips: list[Path] = []
-        for segment in segments:
-            path = (folder / chosen[int(segment["index"])]).resolve()
-            try:
-                path.relative_to(root)
-            except ValueError as error:
-                raise PostProcessConfigError(f"Clip {segment['index']}: {path} is outside the package folder.") from error
-            if not path.is_file():
-                raise FileNotFoundError(f"Clip {segment['index']}: {path} is missing.")
-            clips.append(path)
-        probes = [_probe(path) for path in clips]
-        new_frames = [segment.get("new_frames") for segment in segments]
-        plan = normalization_plan(probes, base_fps=manifest.get("fps"),
-                                  new_frames=new_frames if all(isinstance(n, int) and n > 0 for n in new_frames) else None)
-        fitted = plan.get("frames")  # a retimed stitch: each clip's exact frame count at the interpolated rate
-        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
-        work = folder / ".stitch_normalized"
-        inputs = clips
-        if plan["reencode"]:
-            work.mkdir(exist_ok=True)
-            inputs = []
-            for number, (path, probe) in enumerate(zip(clips, probes), start=1):
-                target = work / f"{number:03d}.mp4"
-                want = fitted[number - 1] if fitted else probe["frames"]
-                command = normalize_command(ffmpeg, path, target, plan["width"], plan["height"], fps=plan.get("fps"), frames=want if fitted else None)
-                result = subprocess.run(command, capture_output=True, text=True)
-                if result.returncode != 0:
-                    raise RuntimeError(f"ffmpeg could not normalize {path.name}:\n{result.stderr[-2000:]}")
-                if _probe(target)["frames"] != want:
-                    raise PostProcessConfigError(f"Normalizing {path.name} gave {_probe(target)['frames']} frames instead of {want}; nothing was stitched.")
-                inputs.append(target)
-
+        clips = _selected_paths(folder, segments, chosen)
         stem = output_name.strip() or "final"
         target = folder / f"{stem}.mp4"
         counter = 2
         while target.exists() and not overwrite:
             target = folder / f"{stem}_{counter}.mp4"
             counter += 1
-        audio = load_song(folder, manifest, None)
-        list_file = folder / ".stitch_list.txt"
-        song_file = folder / ".stitch_song.wav"
-        list_file.write_text("".join("file '" + p.resolve().as_posix().replace("'", "'\\''") + "'\n" for p in inputs), encoding="utf-8")
-        soundfile.write(str(song_file), audio["waveform"][0].float().cpu().numpy().T, int(audio["sample_rate"]))
-        command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(list_file), "-i", str(song_file),
-                   "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "320k", "-shortest", "-movflags", "+faststart", str(target)]
-        try:
-            result = subprocess.run(command, capture_output=True, text=True)
-        finally:
-            list_file.unlink(missing_ok=True)
-            song_file.unlink(missing_ok=True)
-            if work.exists():
-                for leftover in work.glob("*.mp4"):
-                    leftover.unlink(missing_ok=True)
-                try:
-                    work.rmdir()
-                except OSError:
-                    pass
-        if result.returncode != 0:
-            raise RuntimeError("ffmpeg failed:\n" + result.stderr[-2000:])
-        final = _probe(target)
-        expected = sum(fitted) if fitted else sum(probe["frames"] for probe in probes)
-        if final["frames"] != expected:
-            raise PostProcessConfigError(f"The stitched video has {final['frames']} frames; the selected clips have {expected}. {target} is kept for inspection.")
+        plan, final, fitted = _join_clips(folder, manifest, segments, clips, target, load_song(folder, manifest, None))
         processed = [int(segment["index"]) for segment in segments if "postprocess/" in chosen[int(segment["index"])].lower()]
         report = "\n".join([
             f"Stitched {len(clips)} segments into {target}",
             f"{final['width']}x{final['height']} {final['codec']} at {float(fps_fraction(final['fps'])):.2f} fps, original song audio",
             f"Frames: {final['frames']} (sum of the selected clips).",
             f"Post-processed clips used: {', '.join(map(str, processed)) if processed else 'none'}.",
-        ] + ([f"Normalized every clip to {plan['width']}x{plan['height']} (H.264 CRF 16) because the selected clips differ in size, codec, or frame rate."] if plan["reencode"] else [])
-          + ([f"Frame rate: {plan['fps']} fps from DLSS 5 interpolation; each clip fitted to its exact place in the song. "
-              + (f"Clips at the render rate repeat frames to match: {', '.join(plan['repeated'][:20])}." if plan["repeated"] else "Every clip was interpolated.")]
-             if fitted else []))
+        ] + _plan_notes(plan, fitted))
         return {"ui": {"text": [report]}, "result": (str(target), report)}
+
+
+def _selected_paths(folder: Path, segments: list[dict[str, Any]], chosen: dict[int, str]) -> list[Path]:
+    """The chosen package-relative file of each segment, checked to be an existing file inside the package."""
+    root = folder.resolve()
+    clips: list[Path] = []
+    for segment in segments:
+        path = (folder / chosen[int(segment["index"])]).resolve()
+        try:
+            path.relative_to(root)
+        except ValueError as error:
+            raise PostProcessConfigError(f"Clip {segment['index']}: {path} is outside the package folder.") from error
+        if not path.is_file():
+            raise FileNotFoundError(f"Clip {segment['index']}: {path} is missing.")
+        clips.append(path)
+    return clips
+
+
+def _plan_notes(plan: dict[str, Any], fitted: list[int] | None) -> list[str]:
+    return (([f"Normalized every clip to {plan['width']}x{plan['height']} (H.264 CRF 16) because the selected clips differ in size, codec, or frame rate."] if plan["reencode"] else [])
+            + ([f"Frame rate: {plan['fps']} fps from DLSS 5 interpolation; each clip fitted to its exact place in the song. "
+                + (f"Clips at the render rate repeat frames to match: {', '.join(plan['repeated'][:20])}." if plan["repeated"] else "Every clip was interpolated.")]
+               if fitted else []))
+
+
+def _join_clips(folder: Path, manifest: dict[str, Any], segments: list[dict[str, Any]], clips: list[Path], target: Path,
+                audio: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], list[int] | None]:
+    """Joins `clips` (one per segment, in order) with `audio` underneath into `target`. Uniform clips are concatenated
+    without re-encoding; otherwise each is normalized (size, and for DLSS-interpolated clips the frame rate and exact
+    frame count) first. Returns (plan, probe of the result, fitted frame counts or None)."""
+    import imageio_ffmpeg
+    import soundfile
+
+    probes = [_probe(path) for path in clips]
+    new_frames = [segment.get("new_frames") for segment in segments]
+    plan = normalization_plan(probes, base_fps=manifest.get("fps"),
+                              new_frames=new_frames if all(isinstance(n, int) and n > 0 for n in new_frames) else None)
+    fitted = plan.get("frames")  # a retimed stitch: each clip's exact frame count at the interpolated rate
+    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    work = folder / f".stitch_normalized_{target.stem}"
+    list_file = folder / f".stitch_list_{target.stem}.txt"
+    song_file = folder / f".stitch_song_{target.stem}.wav"
+    inputs = clips
+    try:
+        if plan["reencode"]:
+            work.mkdir(exist_ok=True)
+            inputs = []
+            for number, (path, probe) in enumerate(zip(clips, probes), start=1):
+                normalized = work / f"{number:03d}.mp4"
+                want = fitted[number - 1] if fitted else probe["frames"]
+                command = normalize_command(ffmpeg, path, normalized, plan["width"], plan["height"], fps=plan.get("fps"), frames=want if fitted else None)
+                result = subprocess.run(command, capture_output=True, text=True)
+                if result.returncode != 0:
+                    raise RuntimeError(f"ffmpeg could not normalize {path.name}:\n{result.stderr[-2000:]}")
+                got = _probe(normalized)["frames"]
+                if got != want:
+                    raise PostProcessConfigError(f"Normalizing {path.name} gave {got} frames instead of {want}; nothing was stitched.")
+                inputs.append(normalized)
+        list_file.write_text("".join("file '" + p.resolve().as_posix().replace("'", "'\\''") + "'\n" for p in inputs), encoding="utf-8")
+        soundfile.write(str(song_file), audio["waveform"][0].float().cpu().numpy().T, int(audio["sample_rate"]))
+        command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(list_file), "-i", str(song_file),
+                   "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "320k", "-shortest", "-movflags", "+faststart", str(target)]
+        result = subprocess.run(command, capture_output=True, text=True)
+    finally:
+        list_file.unlink(missing_ok=True)
+        song_file.unlink(missing_ok=True)
+        if work.exists():
+            for leftover in work.glob("*.mp4"):
+                leftover.unlink(missing_ok=True)
+            try:
+                work.rmdir()
+            except OSError:
+                pass
+    if result.returncode != 0:
+        raise RuntimeError("ffmpeg failed:\n" + result.stderr[-2000:])
+    final = _probe(target)
+    expected = sum(fitted) if fitted else sum(probe["frames"] for probe in probes)
+    if final["frames"] != expected:
+        raise PostProcessConfigError(f"The stitched video has {final['frames']} frames; the selected clips have {expected}. {target} is kept for inspection.")
+    return plan, final, fitted
+
+
+class MartiniShotStitchTestRuns:
+    """Test videos from an unfinished package: every unbroken run of 2+ rendered clips becomes test_<first>_<last>_<batch>.mp4
+    in the package folder, with the song cut to that run. Each clip is the file the app chose (its resolved post-processed
+    version, else the original render). Never overwrites a file; single rendered clips are skipped and reported."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"render_package": ("MARTINI_RENDER_PACKAGE",), "clip_selection": ("STRING", {"default": "[]", "multiline": True}),
+                             "batch": ("INT", {"default": 1, "min": 1, "max": 99999})}}
+
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("videos_json", "report")
+    FUNCTION = "stitch"
+    OUTPUT_NODE = True
+    CATEGORY = CATEGORY
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        return float("nan")
+
+    def stitch(self, render_package, clip_selection, batch):
+        from .video_nodes import load_manifest, load_song, resolve_folder, slice_audio
+
+        folder = resolve_folder(render_package["folder"])
+        manifest = load_manifest(folder)
+        segments = manifest["segments"]
+        order = [int(segment["index"]) for segment in segments]
+        chosen = parse_selection(clip_selection, order, require_all=False)
+        runs, singles = test_runs(order, set(chosen))
+        if not runs:
+            raise PostProcessConfigError("No two neighbouring clips are rendered yet, so there is nothing to test-stitch"
+                                         + (f" (single rendered clips: {', '.join(map(str, singles))})." if singles else "."))
+        targets = [folder / test_video_name(run[0], run[-1], int(batch)) for run in runs]
+        taken = [path.name for path in targets if path.exists()]
+        if taken:
+            raise PostProcessConfigError(f"{', '.join(taken)} already exist{'s' if len(taken) == 1 else ''}; test batch {batch} was used before. Nothing was stitched.")
+        song = load_song(folder, manifest, None)
+        by_index = {int(segment["index"]): segment for segment in segments}
+        videos, lines = [], []
+        for run, target in zip(runs, targets):
+            run_segments = [by_index[index] for index in run]
+            clips = _selected_paths(folder, run_segments, chosen)
+            start, end = float(run_segments[0]["song_start"]), float(run_segments[-1]["song_end"])
+            plan, final, fitted = _join_clips(folder, manifest, run_segments, clips, target, slice_audio(song, start, end - start))
+            videos.append({"first": run[0], "last": run[-1], "path": str(target), "frames": final["frames"], "fps": final["fps"],
+                           "width": final["width"], "height": final["height"], "song_start": start, "song_end": end,
+                           "processed": [index for index in run if "postprocess/" in chosen[index].lower()]})
+            lines.append(f"{target.name}: clips {run[0]}-{run[-1]}, {final['frames']} frames, {final['width']}x{final['height']} at "
+                         f"{float(fps_fraction(final['fps'])):.2f} fps, song {start:.2f}-{end:.2f} s" + "".join(f"; {note}" for note in _plan_notes(plan, fitted)))
+        report = "\n".join([f"TEST BATCH {batch}: {len(videos)} test video(s) from the rendered runs of clips."] + lines
+                           + ([f"Single rendered clips skipped: {', '.join(map(str, singles))}."] if singles else []))
+        return {"ui": {"text": [report]}, "result": (json.dumps(videos), report)}
 
 
 # ----- Worker environment (also served at GET /martini/postprocess/info) --------------------------------------
@@ -684,6 +757,7 @@ NODE_CLASS_MAPPINGS = {
     "MartiniShotFaceReport": MartiniShotFaceReport,
     "MartiniShotSavePostProcessed": MartiniShotSavePostProcessed,
     "MartiniShotFinalizeSelectedVideo": MartiniShotFinalizeSelectedVideo,
+    "MartiniShotStitchTestRuns": MartiniShotStitchTestRuns,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MartiniShotPostProcessLoad": "Martini Shot Post-process Load Clip",
@@ -691,4 +765,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MartiniShotFaceReport": "Martini Shot Face Report",
     "MartiniShotSavePostProcessed": "Martini Shot Save Post-processed Clip",
     "MartiniShotFinalizeSelectedVideo": "Martini Shot Finalize Selected Clips",
+    "MartiniShotStitchTestRuns": "Martini Shot Stitch Test Videos",
 }

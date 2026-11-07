@@ -230,6 +230,16 @@ const migrations = [{ id: "001_initial_schema", sql: `
   );
   -- The exact per-clip files a stitch joined (package-relative), so later selection changes show as "clips changed since".
   ALTER TABLE final_results ADD COLUMN clip_selection TEXT;
+` }, { id: "011_test_stitches", sql: `
+  -- Test videos from an unfinished package: one row per Stitch test videos press (a batch), each making
+  -- test_<first>_<last>_<batch>.mp4 for every run of 2+ rendered clips. Kept apart from final_results so tests never
+  -- change the final video's state.
+  CREATE TABLE test_stitches (
+    id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES martini_projects(id) ON DELETE CASCADE, package_run_id TEXT NOT NULL,
+    batch INTEGER NOT NULL, status TEXT NOT NULL, comfy_job_id TEXT, prompt_id TEXT, clip_selection TEXT, videos TEXT, report TEXT,
+    error TEXT, started_at TEXT NOT NULL, completed_at TEXT
+  );
+  CREATE INDEX test_stitches_project ON test_stitches(project_id, started_at);
 ` }];
 
 /** Convert pre-ticket absolute paths below output/martini_shot into wire paths. */

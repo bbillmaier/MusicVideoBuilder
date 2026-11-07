@@ -273,8 +273,9 @@ def normalize_command(ffmpeg: str, source: Path, target: Path, width: int, heigh
     ]
 
 
-def parse_selection(text: str, segment_indexes: list[int]) -> dict[int, str]:
-    """The app's clip selection: one package-relative MP4 per planned segment, in order, nothing missing or extra."""
+def parse_selection(text: str, segment_indexes: list[int], require_all: bool = True) -> dict[int, str]:
+    """The app's clip selection: one package-relative MP4 per planned segment, in order, nothing missing or extra.
+    require_all=False (test videos): clips may be missing, but none may be unknown or listed twice."""
     try:
         value = json.loads(text)
     except json.JSONDecodeError as error:
@@ -293,12 +294,32 @@ def parse_selection(text: str, segment_indexes: list[int]) -> dict[int, str]:
         if item["index"] in chosen:
             raise PostProcessConfigError(f"Clip {item['index']} is listed twice.")
         chosen[item["index"]] = path
-    missing = [index for index in segment_indexes if index not in chosen]
+    missing = [index for index in segment_indexes if index not in chosen] if require_all else []
     extra = [index for index in chosen if index not in segment_indexes]
     if missing or extra:
         raise PostProcessConfigError(
             "clip_selection does not match segments.json" + (f"; missing clips {missing[:20]}" if missing else "") + (f"; unknown clips {extra[:20]}" if extra else "") + ".")
     return chosen
+
+
+def test_runs(order: list[int], rendered: set[int]) -> tuple[list[list[int]], list[int]]:
+    """Unbroken runs of rendered clips in manifest order. Runs of two or more become test videos; single clips are
+    returned separately so they can be reported. ([[1..6], [7, 8]], [10]) for 1-8 and 10 rendered."""
+    runs, singles, current = [], [], []
+    for index in order + [None]:
+        if index is not None and index in rendered:
+            current.append(index)
+            continue
+        if len(current) >= 2:
+            runs.append(current)
+        elif current:
+            singles.extend(current)
+        current = []
+    return runs, singles
+
+
+def test_video_name(first: int, last: int, batch: int) -> str:
+    return f"test_{first}_{last}_{batch}.mp4"
 
 
 # ----- Face report --------------------------------------------------------------------------------------------

@@ -160,6 +160,9 @@ declare global {
       results: {
         overview(projectId: string): Promise<ResultsOverview>;
         stitch(projectId: string): Promise<ResultsOverview>;
+        stitchTests(projectId: string): Promise<ResultsOverview>;
+        openTest(projectId: string, testId: string, n: number): Promise<void>;
+        revealTest(projectId: string, testId: string, n: number): Promise<void>;
         openVideo(projectId: string, finalId: string): Promise<void>;
         revealVideo(projectId: string, finalId: string): Promise<void>;
         openFolder(projectId: string, finalId: string): Promise<void>;

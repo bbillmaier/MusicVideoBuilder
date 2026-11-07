@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { CleanupState, DirectorReport, FinalVideo, ResultsOutcome, ResultsOverview, StitchStatus } from "./contracts";
+import type { CleanupState, DirectorReport, FinalVideo, ResultsOutcome, ResultsOverview, StitchStatus, TestBatch, TestVideo } from "./contracts";
 import {
   ComfyWorkflowError, comfyHistory, comfyQueueIds, comfyStatus, freeComfyMemory, runWorkflowTemplate, serializeComfyWork,
   type CleanupEvidence, type WorkflowProgress,
@@ -29,7 +29,7 @@ import {
 import { getProject, projectIdentity } from "./project-service";
 import { isInside } from "./project-rules";
 import {
-  buildDirectorReport, clipsChangedSince, finalState, mp4Duration, outcomeFor, parseFinalizeReport, reportFileName, stitchBlockers,
+  buildDirectorReport, clipsChangedSince, finalState, mp4Duration, nextTestBatch, outcomeFor, parseFinalizeReport, reportFileName, stitchBlockers, testRuns,
   requiredEventStatuses, stitchWorkflowValues, summarizeClips, type ReportInput, type RequiredEventStatus, type SummaryClip,
 } from "./results-rules";
 
@@ -57,6 +57,9 @@ export function configureResultsService(options: { isDevelopment: boolean; onCha
   // Nothing is watching a stitch that was running when the app closed. Stitch final video checks ComfyUI's history for it first.
   db().prepare(`UPDATE final_results SET status = 'interrupted', completed_at = ?,
     error = 'Martini Shot was closed while this video was being stitched. ComfyUI may still have finished it; Stitch final video checks for that before submitting anything new.'
+    WHERE status IN ('queued', 'running')`).run(now());
+  db().prepare(`UPDATE test_stitches SET status = 'interrupted', completed_at = ?,
+    error = 'Martini Shot was closed while these test videos were being stitched. Any test files ComfyUI finished are in the package folder; stitch a new batch to record them.'
     WHERE status IN ('queued', 'running')`).run(now());
 }
 
@@ -296,6 +299,7 @@ export async function resultsOverview(projectId: unknown): Promise<ResultsOvervi
     final: shown, latestAttempt: latest, history: finals, outcome, report, filmstrip, attention,
     rerender: { available: !rerenderReason, reason: rerenderReason, clipCount: rows.length },
     reroll: { available: !rerollReason, reason: rerollReason },
+    tests: await testsInfo(ready, comfy.connected),
   };
 }
 
@@ -489,6 +493,157 @@ async function executeStitch(finalId: string, projectId: string, pkgRowId: strin
     activity.delete(finalId);
     notify(projectId);
   }
+}
+
+// ----- Test videos ------------------------------------------------------------------------------------------
+
+type TestRow = {
+  id: string; project_id: string; package_run_id: string; batch: number; status: StitchStatus; comfy_job_id: string | null; prompt_id: string | null;
+  clip_selection: string | null; videos: string | null; report: string | null; error: string | null; started_at: string; completed_at: string | null;
+};
+type StoredTestVideo = { first: number; last: number; path: string; fps: string | null; size: number | null; duration: number | null; processed: number[] };
+
+/** Projects whose Stitch test videos click is being handled (a double click must not make two batches). */
+const testsStarting = new Set<string>();
+
+function testRows(projectId: string): TestRow[] {
+  return db().prepare("SELECT * FROM test_stitches WHERE project_id = ? ORDER BY started_at DESC").all(projectId) as TestRow[];
+}
+
+function updateTest(id: string, fields: Record<string, unknown>): void {
+  const keys = Object.keys(fields);
+  if (keys.length) db().prepare(`UPDATE test_stitches SET ${keys.map((key) => `${key} = ?`).join(", ")} WHERE id = ?`).run(...keys.map((key) => fields[key]) as never[], id);
+}
+
+/** A recorded test video file, only when it is an existing test_*.mp4 inside the project folder. */
+function verifiedTestVideo(file: string, projectPath: string): string | null {
+  if (!/^test_\d+_\d+_\d+\.mp4$/i.test(path.basename(file)) || !isInside(projectPath, file)) return null;
+  return existsSync(file) ? path.resolve(file) : null;
+}
+
+function toTestBatch(row: TestRow, projectPath: string, currentPackageId: string | null): TestBatch {
+  const videos: TestVideo[] = (parseJson<StoredTestVideo[]>(row.videos) ?? []).map((video, n) => {
+    const file = verifiedTestVideo(video.path, projectPath);
+    return {
+      first: video.first, last: video.last, fileName: path.basename(video.path), path: video.path, exists: Boolean(file),
+      url: file ? `martini-asset://test/${row.id}/${n}?v=${video.size ?? 0}` : null, durationSeconds: video.duration, sizeBytes: video.size,
+      fps: video.fps, processed: video.processed ?? [],
+    };
+  });
+  return {
+    id: row.id, batch: row.batch, status: row.status, packageCurrent: row.package_run_id === currentPackageId, error: row.error, report: row.report,
+    startedAt: row.started_at, completedAt: row.completed_at, videos,
+  };
+}
+
+/** What Stitch test videos would do now, for the Results overview. Tests may run while clips are still rendering: they
+ *  wait their turn in the app's ComfyUI line and only read finished clips. */
+async function testsInfo(ready: Awaited<ReturnType<typeof readiness>>, comfyConnected: boolean): Promise<ResultsOverview["tests"]> {
+  const { project, pkgRow, pkg, rows, renderPackage, selection } = ready;
+  const batches = testRows(project.id).map((row) => toTestBatch(row, project.projectPath, pkgRow?.id ?? null));
+  const empty = { runs: [] as Array<[number, number]>, singles: [] as number[], nextBatch: 1, batches };
+  if (!pkgRow || !pkg) return { ...empty, available: false, reason: "There is no prompt package yet." };
+  const files = new Set((selection?.files ?? []).map((file) => file.index));
+  const rendered = new Set(rows.filter((row) => row.status === "rendered" && files.has(row.clip_index)).map((row) => row.clip_index));
+  const { runs, singles } = testRuns(rows.map((row) => row.clip_index), rendered);
+  const nextBatch = nextTestBatch([...await mp4Files(pkg.folder)], testRows(project.id).filter((row) => row.package_run_id === pkgRow.id).map((row) => row.batch));
+  const active = batches.some((batch) => batch.packageCurrent && (batch.status === "queued" || batch.status === "running"));
+  const reason = active ? "Test videos are being stitched."
+    : !renderPackage || !samePath(String(renderPackage.folder), pkg.folder) ? "render_package.json does not point at this package. Write the prompt package again on Produce."
+      : packageWriting(project.id) ? "A prompt package is being written."
+        : !runs.length ? `No two neighbouring clips are rendered yet${singles.length ? ` (single clips: ${singles.join(", ")})` : ""}.`
+          : !comfyConnected ? "ComfyUI is not reachable."
+            : null;
+  return { available: !reason, reason, runs, singles, nextBatch, batches };
+}
+
+/** Starts Stitch test videos in the background: one batch, one ComfyUI workflow (06c-stitch-tests.json). */
+export async function startTestStitch(projectId: unknown): Promise<ResultsOverview> {
+  const project = projectIdentity(projectId);
+  if (testsStarting.has(project.id)) throw new Error("Test videos are already being stitched.");
+  testsStarting.add(project.id);
+  let testId: string | null = null;
+  try {
+    const overview = await resultsOverview(project.id);
+    if (!overview.tests.available) throw new Error(`No test videos were stitched: ${overview.tests.reason}`);
+    const ready = await readiness(project.id);
+    const pkgRow = ready.pkgRow!;
+    const rendered = new Set(ready.rows.filter((row) => row.status === "rendered").map((row) => row.clip_index));
+    const files = (ready.selection?.files ?? []).filter((file) => rendered.has(file.index)).map((file) => ({ index: file.index, path: file.path }));
+    testId = randomUUID();
+    db().prepare(`INSERT INTO test_stitches (id, project_id, package_run_id, batch, status, clip_selection, started_at) VALUES (?, ?, ?, ?, 'queued', ?, ?)`)
+      .run(testId, project.id, pkgRow.id, overview.tests.nextBatch, JSON.stringify(files), now());
+    addReport(project.id, "final_video", `Stitch test videos started (batch ${overview.tests.nextBatch}): clips ${overview.tests.runs.map(([a, b]) => `${a}-${b}`).join(", ")}.`, { testId });
+    const id = testId;
+    void serializeComfyWork(() => executeTestStitch(id, project.id, pkgRow.id, overview.tests.nextBatch, files)).catch(() => undefined).finally(() => notify(project.id));
+    notify(project.id);
+    return resultsOverview(project.id);
+  } finally {
+    testsStarting.delete(project.id);
+  }
+}
+
+async function executeTestStitch(testId: string, projectId: string, pkgRowId: string, batch: number, files: Array<{ index: number; path: string }>): Promise<void> {
+  try {
+    updateTest(testId, { status: "running" });
+    notify(projectId);
+    const project = getProject(projectId);
+    const pkgRow = packageRow(pkgRowId);
+    const pkg = pkgRow ? toPackage(pkgRow) : null;
+    if (!pkgRow || !pkg || currentPackageRow(projectId)?.id !== pkgRowId) throw new Error("The prompt package changed before the test stitch started. Nothing was submitted.");
+    const renderPackage = await readRenderPackage(project.projectPath);
+    if (!renderPackage) throw new Error("render_package.json is missing. Nothing was submitted.");
+    const remote = (await getMachineSettings()).executionDestination === "remote";
+    const wirePackage = remote ? remoteRenderPackage(renderPackage, project.slug, project.projectPath) : renderPackage;
+    const run = await runWorkflowTemplate(development, "06c-stitch-tests.json", { ...stitchWorkflowValues(project.slug, wirePackage), clip_selection: JSON.stringify(files), batch }, projectId, undefined, {
+      jobId: randomUUID(), onSubmitted: (promptId) => { updateTest(testId, { prompt_id: promptId }); notify(projectId); },
+    });
+    const report = previewText(run.outputs, "stitch_report");
+    const reported = parseJson<Array<{ first: number; last: number; path: string; fps?: string; processed?: number[] }>>(previewText(run.outputs, "videos"));
+    if (!reported || !reported.length) throw new Error("ComfyUI finished, but the test stitch reported no videos.");
+    const videos: StoredTestVideo[] = reported.map((video) => {
+      const local = remote ? remoteReportedPath(project.slug, project.projectPath, pkg.folder, video.path) : path.resolve(video.path);
+      const expected = `test_${video.first}_${video.last}_${batch}.mp4`;
+      if (path.basename(local).toLowerCase() !== expected.toLowerCase() || !samePath(path.dirname(local), pkg.folder)) {
+        throw new Error(`The test stitch reported ${local}, not ${expected} in this package's folder.`);
+      }
+      if (!existsSync(local)) throw new Error(`The test stitch reported ${local}, but the file is not there.`);
+      return { first: video.first, last: video.last, path: local, fps: video.fps ?? null, size: statSync(local).size, duration: readDuration(local), processed: video.processed ?? [] };
+    });
+    updateTest(testId, { status: "complete", videos: JSON.stringify(videos), report, completed_at: now(), error: null });
+    addReport(projectId, "final_video", `Test videos stitched (batch ${batch}): ${videos.map((video) => path.basename(video.path)).join(", ")}.`, { testId });
+  } catch (error) {
+    const message = readableProductionError(error instanceof Error ? error.message : String(error), (await comfyStatus()).endpoint);
+    const outputs = error instanceof ComfyWorkflowError ? error.outputs : null;
+    updateTest(testId, { status: "failed", error: message, report: outputs ? previewText(outputs, "stitch_report") : null, completed_at: now() });
+    addReport(projectId, "final_video_error", `Test stitch failed: ${message}`, { testId });
+  } finally {
+    notify(projectId);
+  }
+}
+
+function testRow(projectId: unknown, testId: unknown): TestRow {
+  const project = projectIdentity(projectId);
+  if (typeof testId !== "string" || !/^[0-9a-f-]{36}$/i.test(testId)) throw new Error("Unknown test batch.");
+  const row = db().prepare("SELECT * FROM test_stitches WHERE id = ? AND project_id = ?").get(testId, project.id) as TestRow | undefined;
+  if (!row) throw new Error("That test batch is not recorded for this project.");
+  return row;
+}
+
+/** For the martini-asset://test/<testId>/<n> protocol: the n-th recorded video of that batch, or null. */
+export function testVideoFile(testId: string, n: number): string | null {
+  const row = db().prepare("SELECT * FROM test_stitches WHERE id = ?").get(testId) as TestRow | undefined;
+  const video = row ? parseJson<StoredTestVideo[]>(row.videos)?.[n] : undefined;
+  if (!row || !video) return null;
+  try { return verifiedTestVideo(video.path, projectIdentity(row.project_id).projectPath); } catch { return null; }
+}
+
+export function testVideoPath(projectId: unknown, testId: unknown, n: unknown): string {
+  const row = testRow(projectId, testId);
+  const video = typeof n === "number" && Number.isInteger(n) ? parseJson<StoredTestVideo[]>(row.videos)?.[n] : undefined;
+  const file = video ? verifiedTestVideo(video.path, projectIdentity(row.project_id).projectPath) : null;
+  if (!file) throw new Error(`${video?.path ?? "This test video"} is no longer on disk.`);
+  return file;
 }
 
 // ----- Files, report export ---------------------------------------------------------------------------------

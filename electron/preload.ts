@@ -140,6 +140,10 @@ contextBridge.exposeInMainWorld("martini", {
     overview: (projectId: string): Promise<ResultsOverview> => ipcRenderer.invoke("martini:results-overview", projectId),
     /** Starts Stitch final video (06-stitch-video.json) in the background; refused unless every clip is rendered. */
     stitch: (projectId: string): Promise<ResultsOverview> => ipcRenderer.invoke("martini:results-stitch", projectId),
+    /** Stitch test videos: test_<first>_<last>_<batch>.mp4 for every run of 2+ rendered clips (06c-stitch-tests.json). */
+    stitchTests: (projectId: string): Promise<ResultsOverview> => ipcRenderer.invoke("martini:results-stitch-tests", projectId),
+    openTest: (projectId: string, testId: string, n: number): Promise<void> => ipcRenderer.invoke("martini:results-open-test", projectId, testId, n),
+    revealTest: (projectId: string, testId: string, n: number): Promise<void> => ipcRenderer.invoke("martini:results-reveal-test", projectId, testId, n),
     openVideo: (projectId: string, finalId: string): Promise<void> => ipcRenderer.invoke("martini:results-open-video", projectId, finalId),
     revealVideo: (projectId: string, finalId: string): Promise<void> => ipcRenderer.invoke("martini:results-reveal-video", projectId, finalId),
     openFolder: (projectId: string, finalId: string): Promise<void> => ipcRenderer.invoke("martini:results-open-folder", projectId, finalId),

@@ -135,6 +135,9 @@ function ResultsContent({ project, comfy, onNavigate }: { project: ProjectDetail
 
         <Attention items={overview.attention} />
 
+        {overview.package && <TestVideos overview={overview} projectId={project.id} pending={pending} act={act}
+          onStitch={() => void act(() => window.martini.results.stitchTests(project.id), (value) => setOverview(value as ResultsOverview))} />}
+
         <section className="panel run-again">
           <h2 className="run-again-title"><Icon.refresh size={22} aria-hidden />Run again</h2>
           <div className="run-again-grid">
@@ -232,6 +235,46 @@ function FileFacts({ final, onCopy, onCopyError, onReveal }: { final: FinalVideo
 function Attention({ items }: { items: string[] }) {
   if (!items.length) return <section className="attention clear"><Icon.success size={24} aria-hidden /><b>Attention needed</b><span className="divider" aria-hidden />No unresolved location references or failed clips.</section>;
   return <section className="attention open" role="status"><b><Icon.warning size={18} aria-hidden /> Attention needed</b><ul>{items.map((item) => <li key={item}>{item}</li>)}</ul></section>;
+}
+
+/** Stitch test videos: every run of 2+ rendered clips becomes test_<first>_<last>_<batch>.mp4, before every clip is done. */
+function TestVideos({ overview, projectId, pending, act, onStitch }: { overview: ResultsOverview; projectId: string; pending: boolean; act(work: () => Promise<unknown>): Promise<void>; onStitch(): void }) {
+  const { tests } = overview;
+  const [playing, setPlaying] = useState<string | null>(null);
+  const running = tests.batches.find((batch) => batch.packageCurrent && (batch.status === "queued" || batch.status === "running"));
+  const runText = tests.runs.map(([first, last]) => `test_${first}_${last}_${tests.nextBatch}`).join(", ");
+  return <section className="panel test-videos">
+    <PanelHead icon={Icon.film} title="Test videos" count={tests.batches.length || undefined}
+      aside={<Button variant="outline-blue" size="sm" icon={Icon.film} busy={Boolean(running)} disabled={!tests.available || pending} onClick={onStitch}>Stitch test videos</Button>} />
+    <p className="muted small">
+      {tests.available ? <>Makes <span className="selectable num">{runText}</span> from each run of 2 or more rendered clips, with the song cut to match. Clips use their post-processed version where one is chosen or current, otherwise the original render.</>
+        : running ? `Stitching test batch ${running.batch}…` : tests.reason}
+      {tests.singles.length > 0 && tests.available && <> Single clips skipped: {tests.singles.join(", ")}.</>}
+    </p>
+    {tests.batches.length > 0 && <ul className="test-batches">{tests.batches.map((batch) => <li key={batch.id}>
+      <div className="test-batch-head">
+        <ToneMark tone={batch.status === "complete" ? "ok" : batch.status === "failed" || batch.status === "interrupted" ? "fail" : batch.status === "queued" || batch.status === "running" ? "pending" : "none"} />
+        <b>Batch {batch.batch}</b>
+        <span className="muted small">{batch.status === "complete" ? `Stitched ${formatWhen(batch.completedAt)}` : `${batch.status} · ${formatWhen(batch.startedAt)}`}{batch.packageCurrent ? "" : " · earlier prompt package"}</span>
+      </div>
+      {batch.error && <p className="error-text small">{batch.error}</p>}
+      {batch.videos.map((video, n) => {
+        const key = `${batch.id}/${n}`;
+        return <div key={key} className="test-video">
+          <div className="test-video-row">
+            <span className="selectable num">{video.fileName}</span>
+            <span className="muted small num">clips {video.first}–{video.last}{video.durationSeconds !== null ? ` · ${formatDuration(video.durationSeconds)}` : ""}{video.fps && video.fps !== "24/1" ? ` · ${video.fps.replace("/1", "")} fps` : ""}{video.processed.length ? ` · post-processed: ${video.processed.join(", ")}` : ""}{video.exists ? "" : " · file no longer on disk"}</span>
+            {video.exists && <div className="row-actions">
+              <IconButton icon={Icon.render} label={playing === key ? "Hide player" : `Play ${video.fileName}`} size="sm" tip="end" onClick={() => setPlaying(playing === key ? null : key)} />
+              <IconButton icon={Icon.external} label={`Open ${video.fileName}`} size="sm" tip="end" onClick={() => void act(() => window.martini.results.openTest(projectId, batch.id, n))} />
+              <IconButton icon={Icon.openFolder} label="Show in folder" size="sm" tip="end" onClick={() => void act(() => window.martini.results.revealTest(projectId, batch.id, n))} />
+            </div>}
+          </div>
+          {playing === key && video.url && <video className="test-player" src={video.url} controls autoPlay preload="metadata" />}
+        </div>;
+      })}
+    </li>)}</ul>}
+  </section>;
 }
 
 function History({ overview, projectId, act }: { overview: ResultsOverview; projectId: string; act(work: () => Promise<unknown>): Promise<void> }) {

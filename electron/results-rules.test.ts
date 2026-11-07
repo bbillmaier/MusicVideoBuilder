@@ -5,7 +5,7 @@ import test from "node:test";
 import type { PlanData } from "./contracts";
 import {
   buildDirectorReport, clipsChangedSince, finalState, formatRanges, mp4Duration, outcomeFor, parseClipSelection, parseFinalizeReport,
-  eventMentioned, reportFileName, requiredEventAllocation, requiredEventStatuses, stitchBlockers, stitchWorkflowValues, summarizeClips, wheelRanges, withContinuations,
+  eventMentioned, nextTestBatch, reportFileName, requiredEventAllocation, requiredEventStatuses, stitchBlockers, stitchWorkflowValues, summarizeClips, testRuns, wheelRanges, withContinuations,
   type ReadinessInput, type ReportInput,
 } from "./results-rules";
 import { applyTemplateValues } from "./workflow-template";
@@ -255,4 +255,24 @@ test("motif report names the frequency and whether surreal imagery was on", () =
   assert.equal(value(false), "0.5 · grounded (surreal imagery off)");
   assert.equal(value(true), "0.5 · surreal imagery on");
   assert.equal(value(null), "0.5");
+});
+
+test("test videos: runs of 2+ rendered clips, single clips skipped, batch counts on from files and records", () => {
+  const order = Array.from({ length: 16 }, (_, i) => i + 1);
+  assert.deepEqual(testRuns(order, new Set([1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14, 15, 16])), { runs: [[1, 8], [11, 16]], singles: [] });
+  assert.deepEqual(testRuns(order, new Set([1, 2, 3, 4, 5, 6, 9, 11, 12])), { runs: [[1, 6], [11, 12]], singles: [9] });
+  assert.deepEqual(testRuns([1, 2, 3], new Set()), { runs: [], singles: [] });
+  assert.equal(nextTestBatch(["final.mp4", "segment_01_00001_.mp4"], []), 1);
+  assert.equal(nextTestBatch(["test_1_6_1.mp4", "TEST_7_8_3.mp4", "test_1_6_x.mp4"], [2]), 4);
+  assert.equal(nextTestBatch([], [5]), 6);
+});
+
+test("06c-stitch-tests fills with the render package, the chosen files, and the batch", () => {
+  const template = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../workflows/06c-stitch-tests.json"), "utf-8")) as { prompt: Record<string, unknown> };
+  const filled = applyTemplateValues(template.prompt, { ...stitchWorkflowValues("p", { folder: "C:/x/render-01" }), clip_selection: "[]", batch: 3 }) as Record<string, { class_type: string; inputs: Record<string, unknown> }>;
+  assert.equal(filled.tests.class_type, "MartiniShotStitchTestRuns");
+  assert.deepEqual(filled.tests.inputs.render_package, { __value__: { folder: "C:/x/render-01" } });
+  assert.equal(filled.tests.inputs.batch, 3);
+  assert.deepEqual(filled.videos.inputs.source, ["tests", 0]);
+  assert.deepEqual(filled.stitch_report.inputs.source, ["tests", 1]);
 });

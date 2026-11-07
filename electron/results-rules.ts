@@ -32,6 +32,25 @@ export function parseFinalizeReport(report: string | null): FinalizeReport {
 
 // ----- Readiness --------------------------------------------------------------------------------------------
 
+/** Unbroken runs of rendered clips in clip order (same rule as the node's test_runs): runs of 2+ become test videos,
+ *  single clips are skipped. */
+export function testRuns(order: number[], rendered: Set<number>): { runs: Array<[number, number]>; singles: number[] } {
+  const runs: Array<[number, number]> = []; const singles: number[] = []; let current: number[] = [];
+  for (const index of [...order, null]) {
+    if (index !== null && rendered.has(index)) { current.push(index); continue; }
+    if (current.length >= 2) runs.push([current[0], current[current.length - 1]]);
+    else singles.push(...current);
+    current = [];
+  }
+  return { runs, singles };
+}
+
+/** The next test batch number for a package: one more than any batch recorded or any test_<a>_<b>_<n>.mp4 in its folder. */
+export function nextTestBatch(fileNames: string[], recorded: number[]): number {
+  const fromFiles = fileNames.map((name) => /^test_\d+_\d+_(\d+)\.mp4$/i.exec(name)).filter(Boolean).map((match) => Number(match![1]));
+  return Math.max(0, ...fromFiles, ...recorded) + 1;
+}
+
 export type ReadinessClip = { index: number; status: string; error: string | null; attempts: number };
 export type ReadinessInput = {
   projectFolderExists: boolean;

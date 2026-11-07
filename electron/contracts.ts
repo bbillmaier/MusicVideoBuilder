@@ -644,6 +644,26 @@ export type ResultsOverview = {
   attention: string[];
   rerender: { available: boolean; reason: string | null; clipCount: number };
   reroll: { available: boolean; reason: string | null };
+  /** Stitch test videos: every run of 2+ rendered clips becomes test_<first>_<last>_<batch>.mp4, even while clips are missing. */
+  tests: {
+    available: boolean;
+    /** Why the button is disabled, or null. */
+    reason: string | null;
+    /** The runs the next batch would stitch, e.g. [[1, 6], [7, 8]], and single rendered clips it would skip. */
+    runs: Array<[number, number]>;
+    singles: number[];
+    nextBatch: number;
+    batches: TestBatch[];
+  };
+};
+
+export type TestVideo = {
+  first: number; last: number; fileName: string; path: string; exists: boolean; url: string | null;
+  durationSeconds: number | null; sizeBytes: number | null; fps: string | null; processed: number[];
+};
+export type TestBatch = {
+  id: string; batch: number; status: StitchStatus; packageCurrent: boolean; error: string | null; report: string | null;
+  startedAt: string; completedAt: string | null; videos: TestVideo[];
 };
 
 export type RerenderRequest = { scope: "all" } | { scope: "clips"; clips: string };

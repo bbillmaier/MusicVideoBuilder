@@ -1,0 +1,41 @@
+{
+  "name": "06c-stitch-tests.json",
+  "stage": "stitch",
+  "description": "Test videos from an unfinished render package: every unbroken run of 2+ rendered clips becomes test_<first>_<last>_<batch>.mp4 in the package folder with the song cut to that run (Martini Shot Stitch Test Videos). Each clip is the file the app chose: its resolved post-processed version, else the original render. Never overwrites a file; single clips are skipped. Used by Stitch test videos on Results.",
+  "prompt": {
+    "open": {
+      "class_type": "MartiniShotOpenProject",
+      "inputs": {
+        "project_name": "{{project_name}}"
+      }
+    },
+    "tests": {
+      "class_type": "MartiniShotStitchTestRuns",
+      "inputs": {
+        "render_package": {
+          "__value__": "{{render_package}}"
+        },
+        "clip_selection": "{{clip_selection}}",
+        "batch": "{{batch}}"
+      }
+    },
+    "videos": {
+      "class_type": "PreviewAny",
+      "inputs": {
+        "source": [
+          "tests",
+          0
+        ]
+      }
+    },
+    "stitch_report": {
+      "class_type": "PreviewAny",
+      "inputs": {
+        "source": [
+          "tests",
+          1
+        ]
+      }
+    }
+  }
+}

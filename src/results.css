@@ -82,3 +82,14 @@
   .results-grid { grid-template-columns: 1fr; }
   .filmstrip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
+
+/* Stitch test videos */
+.test-videos { display: grid; gap: var(--space-2); }
+.test-videos > p { margin: 0; }
+.test-batches { list-style: none; margin: 0; padding: 0; display: grid; }
+.test-batches > li { display: grid; gap: 4px; padding: 8px 0; border-top: 1px solid var(--border-subtle); }
+.test-batch-head { display: flex; align-items: center; gap: var(--space-2); }
+.test-video { display: grid; gap: var(--space-2); padding-left: 26px; }
+.test-video-row { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.test-video-row > .muted { flex: 1; min-width: 0; }
+.test-player { width: 100%; max-height: 360px; background: #000; border-radius: var(--radius); }

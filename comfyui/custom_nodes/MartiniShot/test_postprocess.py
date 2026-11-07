@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from postprocess_core import (  # noqa: E402
     PostProcessConfigError, check_job_mode, check_memory_budget, check_output_target, encode_command, normalization_plan,
-    interpolated_frames, normalize_command, output_size, parse_selection, resolve_inside, retimed_frame_counts, resolve_job_mode, summarize_face_frames, timing_problems, worker_vram_mode,
+    interpolated_frames, normalize_command, test_runs, test_video_name, output_size, parse_selection, resolve_inside, retimed_frame_counts, resolve_job_mode, summarize_face_frames, timing_problems, worker_vram_mode,
 )
 
 
@@ -159,6 +159,23 @@ class Stitching(unittest.TestCase):
         base = check_memory_budget(100, 1280, 720, False, None, 0, dlss5=True)
         bigger = check_memory_budget(100, 1280, 720, False, None, 0, dlss5=True, dlss5_scale=2.0, frame_ratio=2.0)
         self.assertEqual(bigger["dlss5"], base["dlss5"] * 8)
+
+    def test_test_runs_skip_single_clips(self):
+        runs, singles = test_runs(list(range(1, 17)), {1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16})
+        self.assertEqual(runs, [[1, 2, 3, 4, 5, 6, 7, 8], [10, 11, 12, 13, 14, 15, 16]])
+        runs, singles = test_runs(list(range(1, 17)), {1, 2, 3, 4, 5, 6, 9, 11, 12, 13, 14, 15, 16})
+        self.assertEqual(runs, [[1, 2, 3, 4, 5, 6], [11, 12, 13, 14, 15, 16]])
+        self.assertEqual(singles, [9])
+        self.assertEqual(test_runs([1, 2, 3], {2}), ([], [2]))
+        self.assertEqual(test_video_name(7, 8, 1), "test_7_8_1.mp4")
+
+    def test_partial_selection_allows_missing_but_not_unknown_clips(self):
+        partial = json.dumps([{"index": 1, "path": "a.mp4"}, {"index": 2, "path": "b.mp4"}])
+        self.assertEqual(set(parse_selection(partial, [1, 2, 3], require_all=False)), {1, 2})
+        with self.assertRaises(PostProcessConfigError):
+            parse_selection(partial, [1, 2, 3])
+        with self.assertRaises(PostProcessConfigError):
+            parse_selection(json.dumps([{"index": 9, "path": "a.mp4"}]), [1, 2, 3], require_all=False)
 
     def test_selection_must_cover_every_segment(self):
         good = json.dumps([{"index": 1, "path": "segment_01_00001_.mp4"}, {"index": 2, "path": "postprocess/clip_002/x.mp4"}])
