@@ -71,6 +71,58 @@ test("no duplicate CodeFormer: Replace restores inside ReActor, Restore uses onl
   assert.deepEqual((preserve.seedvr2 as { inputs: { image: unknown } }).inputs.image, ["load", 0]);
 });
 
+test("DLSS 5 runs after face work and before SeedVR2, and only changes keys when it is on", () => {
+  const settings = { ...withMode("replace", true), dlss5: true, dlss5Style: "Cinematic" as const, dlss5Strength: 1.2 };
+  const effective = effectiveSettings(settings, "low_vram");
+  assert.deepEqual(effective.dlss5, { style: "Cinematic", strength: 1.2, scale: 1, targetFps: 0, intermediateCrf: 10 });
+  const prompt = buildPostprocessPrompt(template, {
+    attemptId: "a", cacheKey: "k", sourceVideo: "s.mp4", referenceImage: "me.png", outputPath: "o.mp4", sourceSha256: "s", referenceSha256: "r",
+    requestedVramMode: "low_vram", effective,
+  }) as Record<string, { class_type: string; inputs: Record<string, unknown> }>;
+  assert.equal(prompt.dlss5.class_type, "MartiniShotDLSS5");
+  assert.deepEqual(prompt.dlss5.inputs.images, ["face_unload", 0]);
+  assert.deepEqual(prompt.dlss5.inputs.source_info, ["load", 2]);
+  assert.equal(prompt.dlss5.inputs.style, "Cinematic");
+  assert.equal(prompt.dlss5.inputs.strength, 1.2);
+  assert.deepEqual(prompt.seedvr2.inputs.image, ["dlss5", 0]);
+  assert.equal(JSON.parse(prompt.load.inputs.job_json as string).dlss5.style, "Cinematic", "the load node sizes its RAM budget for the DLSS output");
+  // DLSS alone (no face work, no upscale) feeds the save node straight from the load node
+  const alone = buildPostprocessPrompt(template, {
+    attemptId: "a", cacheKey: "k", sourceVideo: "s.mp4", referenceImage: "", outputPath: "o.mp4", sourceSha256: "s", referenceSha256: null,
+    requestedVramMode: "low_vram", effective: effectiveSettings({ ...defaultSettings(), dlss5: true }, "low_vram"),
+  }) as Record<string, { inputs: Record<string, unknown> }>;
+  assert.deepEqual(alone.dlss5.inputs.images, ["load", 0]);
+  assert.deepEqual(alone.save.inputs.images, ["dlss5", 0]);
+  assert.equal(processingRequested({ ...defaultSettings(), dlss5: true }), true);
+  // keys of results made before DLSS 5 existed stay the same while it is off
+  const off = { sourceSha256: "s1", referenceSha256: null, effective: effectiveSettings(withMode("restore", true), "low_vram") };
+  assert.equal(cacheKey(off), cacheKey({ ...off, effective: { ...off.effective, dlss5: undefined } as unknown as typeof off.effective }));
+  assert.notEqual(cacheKey(off), cacheKey({ ...off, effective: effectiveSettings({ ...withMode("restore", true), dlss5: true }, "low_vram") }));
+  assert.notEqual(cacheKey({ ...off, effective: effectiveSettings({ ...withMode("restore", true), dlss5: true }, "low_vram") }),
+    cacheKey({ ...off, effective: effectiveSettings({ ...withMode("restore", true), dlss5: true, dlss5Strength: 0.5 }, "low_vram") }));
+  assert.throws(() => normalizeSettings({ ...defaultSettings(), dlss5Style: "Anime" }), /DLSS 5 style/);
+  assert.throws(() => normalizeSettings({ ...defaultSettings(), dlss5Strength: 3 }), /DLSS 5 strength/);
+  assert.equal(normalizeSettings({ faceMode: "preserve" }).dlss5, false, "settings saved before DLSS 5 read as off");
+  assert.throws(() => normalizeSettings({ ...defaultSettings(), dlss5Scale: 5 }), /DLSS 5 scale/);
+  assert.throws(() => normalizeSettings({ ...defaultSettings(), dlss5TargetFps: 50 }), /target frame rate/);
+});
+
+test("DLSS 5 scale and interpolation reach the node and the save checks", () => {
+  const effective = effectiveSettings({ ...defaultSettings(), dlss5: true, dlss5Scale: 2, dlss5TargetFps: 48 }, "low_vram");
+  const prompt = buildPostprocessPrompt(template, {
+    attemptId: "a", cacheKey: "k", sourceVideo: "s.mp4", referenceImage: "", outputPath: "o.mp4", sourceSha256: "s", referenceSha256: null,
+    requestedVramMode: "low_vram", effective,
+  }) as Record<string, { inputs: Record<string, unknown> }>;
+  assert.equal(prompt.dlss5.inputs.scale, 2);
+  assert.equal(prompt.dlss5.inputs.target_fps, 48);
+  assert.deepEqual(JSON.parse(prompt.load.inputs.job_json as string).dlss5,
+    { style: "Default", strength: 1, scale: 2, target_fps: 48, intermediate_crf: 10 }, "the nodes read snake_case job facts");
+  const source = { frames: 97, fps: "24/1", width: 1280, height: 720 };
+  assert.deepEqual(timingProblems(source, { frames: 193, fps: "48/1", width: 2560, height: 1440 }, 48), []);
+  assert.equal(timingProblems(source, { frames: 150, fps: "48/1", width: 2560, height: 1440 }, 48).length, 1);
+  assert.equal(timingProblems(source, { frames: 194, fps: "48/1", width: 1280, height: 720 }).length, 2, "a changed rate without a target is refused");
+});
+
 test("schema validation reports unknown inputs, bad combos, ranges, and missing classes", () => {
   const prompt = {
     a: { class_type: "Known", inputs: { model: "missing.safetensors", batch: 999, flag: "yes", extra: 1 } },

@@ -16,6 +16,10 @@ export function jobJson(job: PostJob): string {
     requested_vram_mode: job.requestedVramMode, resolved_vram_mode: job.effective.resolvedVramMode,
     source_sha256: job.sourceSha256, reference_sha256: job.referenceSha256,
     upscale: job.effective.upscale ? { resolution: job.effective.upscale.resolution, model: job.effective.upscale.ditModel, batch_size: job.effective.upscale.batchSize } : null,
+    dlss5: job.effective.dlss5 ? {
+      style: job.effective.dlss5.style, strength: job.effective.dlss5.strength, scale: job.effective.dlss5.scale,
+      target_fps: job.effective.dlss5.targetFps, intermediate_crf: job.effective.dlss5.intermediateCrf,
+    } : null,
     effective: job.effective,
   });
 }
@@ -29,6 +33,12 @@ export function buildPostprocessPrompt(template: WorkflowTemplate, job: PostJob)
   if (effective.face) {
     Object.assign(graph, need(effective.face.swapModel ? "replace" : "restore"), need("face_report"));
     last = "face_unload"; // the face report, then ReActor's own unload before SeedVR2 loads
+  }
+  if (effective.dlss5) {
+    // after face work (and ReActor's unload), before SeedVR2
+    Object.assign(graph, need("dlss5"));
+    graph.dlss5 = JSON.parse(JSON.stringify(graph.dlss5).replace("{{dlss5_input_node}}", last));
+    last = "dlss5";
   }
   if (effective.upscale) {
     Object.assign(graph, need("upscale"));
@@ -50,6 +60,8 @@ export function buildPostprocessPrompt(template: WorkflowTemplate, job: PostJob)
     attention_mode: up?.attention, vae_model: up?.vaeModel, vae_tiling: up?.vaeTiling, vae_tile_size: up?.tileSize, vae_tile_overlap: up?.tileOverlap,
     vae_offload_device: up?.vaeOffload, seed: up?.seed, resolution: up?.resolution, batch_size: up?.batchSize, uniform_batch_size: up?.uniformBatch,
     temporal_overlap: up?.temporalOverlap, color_correction: up?.colorCorrection, tensor_offload_device: up?.tensorOffload,
+    dlss5_style: effective.dlss5?.style, dlss5_strength: effective.dlss5?.strength, dlss5_crf: effective.dlss5?.intermediateCrf,
+    dlss5_scale: effective.dlss5?.scale, dlss5_target_fps: effective.dlss5?.targetFps,
   };
   return applyTemplateValues(graph, values) as Record<string, unknown>;
 }

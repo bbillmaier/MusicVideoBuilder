@@ -77,23 +77,29 @@ def output_size(width: int, height: int, shortest_edge: int) -> tuple[int, int]:
     return max(2, 2 * round(width * scale / 2)), max(2, 2 * round(height * scale / 2))
 
 
-def estimate_peak_bytes(frames: int, width: int, height: int, face_stage: bool, upscale_edge: int | None) -> dict[str, int]:
+def estimate_peak_bytes(frames: int, width: int, height: int, face_stage: bool, upscale_edge: int | None,
+                        dlss5: bool = False, dlss5_scale: float = 1.0, frame_ratio: float = 1.0) -> dict[str, int]:
     """A deliberately pessimistic estimate of decoded-frame host memory for one clip (model weights excluded).
 
     float32 source batch, plus (face stage) ReActor's uint8 PIL/BGR copies and its float output, plus (upscale) SeedVR2's
-    float output and one more output-sized buffer for color correction / offloaded intermediates."""
+    float output and one more output-sized buffer for color correction / offloaded intermediates, plus (DLSS 5) its
+    decoded float output, which is dlss5_scale² larger when DLSS upscales and frame_ratio longer when it interpolates
+    (SeedVR2 then also processes frame_ratio times as many frames)."""
     pixels = frames * width * height * 3
     source = pixels * 4
     face = pixels * (4 + 3 + 3) if face_stage else 0
     upscaled = 0
+    ratio = max(1.0, float(frame_ratio)) if dlss5 else 1.0
     if upscale_edge:
         out_w, out_h = output_size(width, height, upscale_edge)
-        upscaled = frames * out_w * out_h * 3 * 4 * 2
-    return {"source": source, "face": face, "upscale": upscaled, "total": source + face + upscaled}
+        upscaled = int(frames * ratio * out_w * out_h * 3 * 4 * 2)
+    enhanced = int(pixels * 4 * max(1.0, float(dlss5_scale)) ** 2 * ratio) if dlss5 else 0
+    return {"source": source, "face": face, "dlss5": enhanced, "upscale": upscaled, "total": source + face + enhanced + upscaled}
 
 
-def check_memory_budget(frames: int, width: int, height: int, face_stage: bool, upscale_edge: int | None, budget_gb: float) -> dict[str, int]:
-    estimate = estimate_peak_bytes(frames, width, height, face_stage, upscale_edge)
+def check_memory_budget(frames: int, width: int, height: int, face_stage: bool, upscale_edge: int | None, budget_gb: float,
+                        dlss5: bool = False, dlss5_scale: float = 1.0, frame_ratio: float = 1.0) -> dict[str, int]:
+    estimate = estimate_peak_bytes(frames, width, height, face_stage, upscale_edge, dlss5, dlss5_scale, frame_ratio)
     budget = int(budget_gb * 1024 ** 3)
     if budget > 0 and estimate["total"] > budget:
         raise PostProcessConfigError(
@@ -119,13 +125,29 @@ def fps_text(value: Fraction) -> str:
     return f"{value.numerator}/{value.denominator}"
 
 
-def timing_problems(source: dict[str, Any], output: dict[str, Any], tolerance: float = 0.01) -> list[str]:
-    """Why an output does not preserve the source's timing and shape. Empty when it does."""
+def interpolated_frames(frames: int, source_fps: Any, target_fps: Any) -> int:
+    """How many frames a clip of `frames` at source_fps has after interpolation to target_fps (same duration)."""
+    return int(round(frames * fps_fraction(target_fps) / fps_fraction(source_fps)))
+
+
+INTERPOLATION_FRAME_TOLERANCE = 2  # DLSS Frame Generation may end a frame or two off; the stitch fits every clip exactly
+
+
+def timing_problems(source: dict[str, Any], output: dict[str, Any], tolerance: float = 0.01, target_fps: Any = None) -> list[str]:
+    """Why an output does not preserve the source's timing and shape. Empty when it does. With target_fps (DLSS 5
+    interpolation) the output must be at that rate and keep the source's duration within a couple of frames."""
     problems: list[str] = []
-    if int(output["frames"]) != int(source["frames"]):
-        problems.append(f"frame count changed: {source['frames']} → {output['frames']}")
-    if fps_fraction(output["fps"]) != fps_fraction(source["fps"]):
-        problems.append(f"frame rate changed: {source['fps']} → {output['fps']}")
+    if target_fps:
+        expected = interpolated_frames(int(source["frames"]), source["fps"], target_fps)
+        if abs(int(output["frames"]) - expected) > INTERPOLATION_FRAME_TOLERANCE:
+            problems.append(f"frame count {output['frames']} is not the {expected} frames of {source['frames']} at {source['fps']} interpolated to {fps_text(fps_fraction(target_fps))}")
+        if fps_fraction(output["fps"]) != fps_fraction(target_fps):
+            problems.append(f"frame rate is {output['fps']}, not the interpolation target {fps_text(fps_fraction(target_fps))}")
+    else:
+        if int(output["frames"]) != int(source["frames"]):
+            problems.append(f"frame count changed: {source['frames']} → {output['frames']}")
+        if fps_fraction(output["fps"]) != fps_fraction(source["fps"]):
+            problems.append(f"frame rate changed: {source['fps']} → {output['fps']}")
     source_aspect = source["width"] / source["height"]
     output_aspect = output["width"] / output["height"]
     if abs(output_aspect - source_aspect) / source_aspect > tolerance:
@@ -180,35 +202,73 @@ def encode_command(ffmpeg: str, width: int, height: int, fps: Fraction, source: 
     ]
 
 
-def normalization_plan(probes: list[dict[str, Any]], tolerance: float = 0.01) -> dict[str, Any]:
+def retimed_frame_counts(new_frames: list[int], base_fps: Any, target_fps: Any) -> list[int]:
+    """Each clip's exact frame count at target_fps, from where it sits in the song: clip k covers
+    [start_k, end_k) source frames, so it gets round(end_k·T/F) − round(start_k·T/F) frames. Rounding never accumulates,
+    so the video stays within half a frame of the music for the whole song."""
+    ratio = fps_fraction(target_fps) / fps_fraction(base_fps)
+    counts, start = [], 0
+    for frames in new_frames:
+        end = start + int(frames)
+        counts.append(int(round(end * ratio)) - int(round(start * ratio)))
+        start = end
+    return counts
+
+
+def normalization_plan(probes: list[dict[str, Any]], tolerance: float = 0.01, base_fps: Any = None,
+                       new_frames: list[int] | None = None) -> dict[str, Any]:
     """How the final stitch can join these clips.
 
     Identical size/codec/pixel format → concat without re-encoding (the original Finalize Video behavior). Otherwise every
-    clip is re-encoded to the largest clip's size so the concat stream is uniform. A different frame rate or aspect ratio
-    is an error: re-timing or cropping would break music synchronization or framing."""
+    clip is re-encoded to the largest clip's size so the concat stream is uniform. An aspect ratio mismatch is an error.
+
+    Frame rates: clips at the render rate (base_fps) plus clips DLSS 5 interpolated to ONE project rate are allowed. Then
+    every clip is re-encoded at that rate (render-rate clips repeat frames) and fitted to the exact frame count of its
+    place in the song (retimed_frame_counts), so the music stays in sync. Two different interpolation rates, or a rate
+    without the manifest's base rate and frame counts, is an error."""
     if not probes:
         raise PostProcessConfigError("No clips to stitch.")
     first = probes[0]
-    rates = {fps_fraction(probe["fps"]) for probe in probes}
-    if len(rates) > 1:
-        raise PostProcessConfigError("The selected clips have different frame rates (" + ", ".join(sorted(fps_text(r) for r in rates)) +
-                                     "). Martini Shot will not re-time clips; re-process or bypass the odd ones.")
     aspect = first["width"] / first["height"]
     odd = [probe["name"] for probe in probes if abs(probe["width"] / probe["height"] - aspect) / aspect > tolerance]
     if odd:
         raise PostProcessConfigError(f"These clips have a different aspect ratio from {first['name']}: {', '.join(odd[:10])}.")
+    largest = max(probes, key=lambda probe: probe["width"] * probe["height"])
+    width, height = 2 * math.ceil(largest["width"] / 2), 2 * math.ceil(largest["height"] / 2)
+    rates = {fps_fraction(probe["fps"]) for probe in probes}
+    base = fps_fraction(base_fps) if base_fps else None
+    other = rates - {base} if base is not None else rates
+    if base is not None and other:
+        if len(other) > 1:
+            raise PostProcessConfigError("The selected clips use more than one interpolated frame rate (" + ", ".join(sorted(fps_text(r) for r in other)) +
+                                         "). Use one DLSS 5 target frame rate for every interpolated clip, or bypass the odd ones.")
+        if not new_frames or len(new_frames) != len(probes):
+            raise PostProcessConfigError("The render manifest has no per-clip frame counts, so interpolated clips can't be fitted to the song.")
+        target = next(iter(other))
+        return {"reencode": True, "width": width, "height": height, "fps": fps_text(target),
+                "frames": retimed_frame_counts(new_frames, base, target),
+                "repeated": [probe["name"] for probe in probes if fps_fraction(probe["fps"]) != target]}
+    if len(rates) > 1:
+        raise PostProcessConfigError("The selected clips have different frame rates (" + ", ".join(sorted(fps_text(r) for r in rates)) +
+                                     "). Martini Shot will not re-time clips; re-process or bypass the odd ones.")
     uniform = all((p["width"], p["height"], p["codec"], p.get("pix_fmt")) == (first["width"], first["height"], first["codec"], first.get("pix_fmt")) for p in probes)
     if uniform:
         return {"reencode": False, "width": first["width"], "height": first["height"]}
-    largest = max(probes, key=lambda probe: probe["width"] * probe["height"])
-    width, height = 2 * math.ceil(largest["width"] / 2), 2 * math.ceil(largest["height"] / 2)
     return {"reencode": True, "width": width, "height": height}
 
 
-def normalize_command(ffmpeg: str, source: Path, target: Path, width: int, height: int, crf: int = 16) -> list[str]:
+def normalize_command(ffmpeg: str, source: Path, target: Path, width: int, height: int, crf: int = 16,
+                      fps: str | None = None, frames: int | None = None) -> list[str]:
+    """Re-encode one clip for the stitch. With fps and frames (a retimed stitch): convert to that constant rate (a
+    render-rate clip repeats frames), hold the last frame if short, and stop at exactly `frames` frames."""
+    filters = f"scale={width}:{height}:flags=lanczos,setsar=1"
+    timing = ["-fps_mode", "passthrough"]
+    if fps and frames:
+        filters = f"fps={fps},{filters},tpad=stop_mode=clone:stop_duration=1"
+        timing = ["-frames:v", str(int(frames))]
     return [
         ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", str(source), "-map", "0:v:0", "-an",
-        "-vf", f"scale={width}:{height}:flags=lanczos,setsar=1", "-fps_mode", "passthrough",
+        "-vf", filters, *timing,
         "-c:v", "libx264", "-preset", "medium", "-crf", str(crf), "-pix_fmt", "yuv420p", str(target),
     ]
 

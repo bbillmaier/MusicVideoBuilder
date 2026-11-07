@@ -751,6 +751,10 @@ export type PostAdvancedSettings = {
 };
 
 /** What the user asked for on one clip. Face treatment and upscaling are independent. */
+export const POST_DLSS5_STYLES = ["Default", "Natural", "Cinematic"] as const;
+export const POST_DLSS5_SCALES = [1, 1.5, 2, 3, 4] as const;
+export const POST_DLSS5_FPS = [0, 30, 48, 60, 72, 96, 120] as const;
+
 export type PostSettings = {
   faceMode: PostFaceMode;
   /** Character reference for Replace (a performer/outfit asset id); null = the project's first performer image. */
@@ -761,6 +765,17 @@ export type PostSettings = {
   codeformerFidelity: number;
   /** Blend of the restored face over the input (0.1–1). */
   restoreVisibility: number;
+  /** DLSS 5 neural rendering at native size (the Custom DLSS5 Enhance (Video) node; Windows ComfyUI only). Runs after
+   *  face treatment and before SeedVR2. */
+  dlss5: boolean;
+  dlss5Style: typeof POST_DLSS5_STYLES[number];
+  /** 0–2, the node's strength. */
+  dlss5Strength: number;
+  /** RTX upscale after the neural render (1 = native size). */
+  dlss5Scale: typeof POST_DLSS5_SCALES[number];
+  /** DLSS Frame Generation target (0 = off). Every interpolated clip in one stitch must use the same rate; the other
+   *  clips repeat frames up to it. */
+  dlss5TargetFps: typeof POST_DLSS5_FPS[number];
   upscale: boolean;
   /** Target shortest edge in pixels (aspect ratio kept). */
   outputShortEdge: typeof POST_OUTPUT_EDGES[number];
@@ -812,7 +827,10 @@ export type PostClip = {
 export type PostWorkerInfo = {
   endpoint: string; reachable: boolean; error: string | null;
   vramDefault: { value: PostResolvedVramMode | null; source: string; raw: string | null; error: string | null } | null;
-  reactor: string | null; seedvr2: string | null; onnxruntime: string | null; ortCudaBuild: string | null; ortSessionProviders: string[] | null;
+  reactor: string | null; seedvr2: string | null;
+  /** Custom DLSS5 node loaded and VE_CLI.exe found: null when ready, else why DLSS 5 can't run on this worker. */
+  dlss5Problem: string | null;
+  onnxruntime: string | null; ortCudaBuild: string | null; ortSessionProviders: string[] | null;
   torch: string | null; cuda: string | null; device: string | null; vramTotal: number | null; ramTotal: number | null;
   missingModels: { face: string[]; low_vram: string[]; high_vram: string[]; optional: string[] };
   checkedAt: string;

@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from postprocess_core import (  # noqa: E402
     PostProcessConfigError, check_job_mode, check_memory_budget, check_output_target, encode_command, normalization_plan,
-    output_size, parse_selection, resolve_inside, resolve_job_mode, summarize_face_frames, timing_problems, worker_vram_mode,
+    interpolated_frames, normalize_command, output_size, parse_selection, resolve_inside, retimed_frame_counts, resolve_job_mode, summarize_face_frames, timing_problems, worker_vram_mode,
 )
 
 
@@ -59,6 +59,12 @@ class MemoryAndTiming(unittest.TestCase):
         with self.assertRaises(PostProcessConfigError) as raised:
             check_memory_budget(2400, 1280, 720, True, 2160, 24)
         self.assertIn("Nothing was processed", str(raised.exception))
+
+    def test_memory_budget_counts_the_dlss5_output(self):
+        without = check_memory_budget(120, 1280, 720, True, 1080, 24)
+        with_dlss = check_memory_budget(120, 1280, 720, True, 1080, 24, dlss5=True)
+        self.assertEqual(without["dlss5"], 0)
+        self.assertEqual(with_dlss["total"] - without["total"], 120 * 1280 * 720 * 3 * 4)
 
     def test_timing_problems(self):
         source = {"frames": 97, "fps": "24/1", "width": 1280, "height": 720}
@@ -113,6 +119,46 @@ class Stitching(unittest.TestCase):
             normalization_plan([self.probe("a"), self.probe("b", fps="25/1")])
         with self.assertRaises(PostProcessConfigError):
             normalization_plan([self.probe("a"), self.probe("b", 1080, 1080)])
+
+    def test_one_interpolated_rate_retimes_the_whole_stitch(self):
+        probes = [self.probe("a"), self.probe("b", fps="48/1"), self.probe("c")]
+        plan = normalization_plan(probes, base_fps=24, new_frames=[232, 217, 101])
+        self.assertTrue(plan["reencode"])
+        self.assertEqual(plan["fps"], "48/1")
+        self.assertEqual(plan["frames"], [464, 434, 202])
+        self.assertEqual(plan["repeated"], ["a", "c"])
+        with self.assertRaises(PostProcessConfigError):
+            normalization_plan([self.probe("a"), self.probe("b", fps="48/1"), self.probe("c", fps="60/1")], base_fps=24, new_frames=[1, 1, 1])
+        with self.assertRaises(PostProcessConfigError):
+            normalization_plan([self.probe("a"), self.probe("b", fps="48/1")])  # no manifest facts: still refused
+
+    def test_retimed_counts_never_drift_from_the_song(self):
+        new_frames = [97, 113, 89, 121, 77] * 6
+        counts = retimed_frame_counts(new_frames, 24, 60)
+        self.assertEqual(sum(counts), round(sum(new_frames) * 60 / 24))
+        start = 0
+        for frames, count, done in zip(new_frames, counts, [sum(counts[:i + 1]) for i in range(len(counts))]):
+            start += frames
+            self.assertLessEqual(abs(done - start * 60 / 24), 0.5)
+
+    def test_retimed_normalize_command_fixes_rate_and_count(self):
+        command = normalize_command("ffmpeg", Path("in.mp4"), Path("out.mp4"), 1280, 720, fps="48/1", frames=464)
+        self.assertIn("fps=48/1,scale=1280:720:flags=lanczos,setsar=1,tpad=stop_mode=clone:stop_duration=1", command)
+        self.assertEqual(command[command.index("-frames:v") + 1], "464")
+        self.assertNotIn("-frames:v", normalize_command("ffmpeg", Path("in.mp4"), Path("out.mp4"), 1280, 720))
+
+    def test_interpolated_output_timing(self):
+        source = {"frames": 97, "fps": "24/1", "width": 1280, "height": 720}
+        self.assertEqual(interpolated_frames(97, "24/1", 48), 194)
+        self.assertEqual(timing_problems(source, {"frames": 193, "fps": "48/1", "width": 2560, "height": 1440}, target_fps=48), [])
+        self.assertTrue(timing_problems(source, {"frames": 150, "fps": "48/1", "width": 1280, "height": 720}, target_fps=48))
+        self.assertTrue(timing_problems(source, {"frames": 194, "fps": "50/1", "width": 1280, "height": 720}, target_fps=48))
+        self.assertTrue(timing_problems(source, {"frames": 194, "fps": "48/1", "width": 1280, "height": 720}), "without a target the rate must not change")
+
+    def test_memory_budget_scales_with_dlss_upscale_and_interpolation(self):
+        base = check_memory_budget(100, 1280, 720, False, None, 0, dlss5=True)
+        bigger = check_memory_budget(100, 1280, 720, False, None, 0, dlss5=True, dlss5_scale=2.0, frame_ratio=2.0)
+        self.assertEqual(bigger["dlss5"], base["dlss5"] * 8)
 
     def test_selection_must_cover_every_segment(self):
         good = json.dumps([{"index": 1, "path": "segment_01_00001_.mp4"}, {"index": 2, "path": "postprocess/clip_002/x.mp4"}])

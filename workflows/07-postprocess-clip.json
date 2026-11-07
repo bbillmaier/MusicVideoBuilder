@@ -1,7 +1,7 @@
 {
   "name": "07-postprocess-clip.json",
   "stage": "postprocess",
-  "description": "Post-processes one rendered clip without touching it: optional ReActor face restoration (Restore) or face replacement with optional built-in CodeFormer (Replace), a face report, optional SeedVR2 restoration/upscaling, then a new MP4 in <package>/postprocess/ whose frame count, frame rate and aspect ratio are verified against the source. The app assembles the graph from the fragments below (electron/postprocess-workflow.ts).",
+  "description": "Post-processes one rendered clip without touching it: optional ReActor face restoration (Restore) or face replacement with optional built-in CodeFormer (Replace), a face report, optional DLSS 5 neural rendering with optional RTX upscale and frame interpolation (the Custom DLSS5 node, Windows only), optional SeedVR2 restoration/upscaling, then a new MP4 in <package>/postprocess/ whose frame count, frame rate and aspect ratio are verified against the source. The app assembles the graph from the fragments below (electron/postprocess-workflow.ts).",
   "prompt": {
     "load": {
       "class_type": "MartiniShotPostProcessLoad",
@@ -46,6 +46,15 @@
       "face_report": { "class_type": "MartiniShotFaceReport", "inputs": { "original": ["load", 0], "processed": ["face", 0], "job_json": "{{job_json}}" } },
       "face_unload": { "class_type": "ReActorUnload", "inputs": { "trigger": ["face_report", 0] } },
       "face_report_text": { "class_type": "PreviewAny", "inputs": { "source": ["face_report", 1] } }
+    },
+    "dlss5": {
+      "dlss5": {
+        "class_type": "MartiniShotDLSS5",
+        "inputs": {
+          "images": ["{{dlss5_input_node}}", 0], "source_info": ["load", 2], "style": "{{dlss5_style}}", "strength": "{{dlss5_strength}}", "scale": "{{dlss5_scale}}", "target_fps": "{{dlss5_target_fps}}",
+          "intermediate_crf": "{{dlss5_crf}}", "job_json": "{{job_json}}"
+        }
+      }
     },
     "upscale": {
       "seedvr2_dit": {

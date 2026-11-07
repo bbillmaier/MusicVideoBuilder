@@ -158,8 +158,12 @@ export async function songTimeline(projectId: unknown): Promise<SongTimeline> {
           : busy ? "ComfyUI is busy with another Martini Shot job. Analyze the song when it finishes."
             : null;
   const hasPackage = Boolean(plans.plan && currentPackageRow(project.id));
+  // Only a package written from the current plan locks the timeline. After a reroll or a new plan the package is out of
+  // date (it can't render more clips until it is rewritten), so the timeline can be edited for the next package.
+  const produce = hasPackage ? await produceOverview(project.id) : null;
+  const packageCurrent = Boolean(produce && !produce.packageStale.length);
   const editReason = !analysis ? "Analyze the song first."
-    : hasPackage ? "A prompt package exists, so the timeline is read-only for now. Editing a timeline that already has prompts and clips comes in a later update."
+    : packageCurrent ? "A prompt package exists, so the timeline is read-only for now. Editing a timeline that already has prompts and clips comes in a later update."
       : planRunning ? "A director plan is being made. Edit the timeline when it finishes."
         : applying ? "The saved timeline is being applied to the plan."
           : busy?.projectId === project.id ? "This project is busy in production. Edit the timeline when it finishes."
@@ -194,8 +198,7 @@ export async function songTimeline(projectId: unknown): Promise<SongTimeline> {
 
   let shots: SongTimeline["shots"] = [];
   let shotSource: SongTimeline["shotSource"] = "preview";
-  if (hasPackage) {
-    const produce = await produceOverview(project.id);
+  if (produce) {
     if (produce.clips.length && !produce.packageStale.length) {
       shots = packageShots(produce.clips);
       shotSource = "package";

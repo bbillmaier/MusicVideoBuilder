@@ -16,6 +16,9 @@ const STATE_TONE: Record<PostClip["state"], Tone> = {
   canceled: "muted", stale: "warn", bypassed: "info", not_rendered: "muted",
 };
 const EDGES = [720, 1080, 1440, 2160] as const;
+const DLSS5_STYLES = ["Default", "Natural", "Cinematic"] as const;
+const DLSS5_SCALES = [1, 1.5, 2, 3, 4] as const;
+const DLSS5_FPS = [0, 30, 48, 60, 72, 96, 120] as const;
 const BATCHES = [5, 9, 13, 17, 21, 25, 33];
 
 function outSize(source: { width: number; height: number } | null, edge: number): string {
@@ -23,6 +26,9 @@ function outSize(source: { width: number; height: number } | null, edge: number)
   const scale = edge / Math.min(source.width, source.height);
   const even = (value: number) => Math.max(2, 2 * Math.round(value / 2));
   return `${even(source.width * scale)}×${even(source.height * scale)}`;
+}
+function outScaled(source: { width: number; height: number } | null, scale: number): string {
+  return source ? `${Math.round(source.width * scale)}×${Math.round(source.height * scale)}` : `${scale}× the clip size`;
 }
 const ranges = (list: number[][]) => list.map(([a, b]) => (a === b ? `${a}` : `${a}–${b}`)).join(", ");
 
@@ -114,7 +120,7 @@ function PostContent({ project, comfy, onNavigate }: { project: ProjectDetail; c
               <span className="post-clip-text">
                 <b>Clip {item.index}</b>
                 <span className="muted small">{[item.scene || "—", item.section ? `section ${item.section}` : null, `${item.duration.toFixed(1)}s`, item.sourceSize ? `${item.sourceSize.width}×${item.sourceSize.height}` : null].filter(Boolean).join(" · ")}</span>
-                <span className="small">{item.settings.faceMode === "preserve" && !item.settings.upscale ? "No processing" : `${FACE_MODES.find((mode) => mode.value === item.settings.faceMode)!.label}${item.settings.upscale ? ` + ${item.settings.outputShortEdge}p` : ""} · ${VRAM_LABEL[item.settings.vramMode]}`}</span>
+                <span className="small">{item.settings.faceMode === "preserve" && !item.settings.upscale && !item.settings.dlss5 ? "No processing" : `${FACE_MODES.find((mode) => mode.value === item.settings.faceMode)!.label}${item.settings.dlss5 ? " + DLSS 5" : ""}${item.settings.upscale ? ` + ${item.settings.outputShortEdge}p` : ""} · ${VRAM_LABEL[item.settings.vramMode]}`}</span>
               </span>
               <Pill tone={STATE_TONE[item.state]}>{item.stateText}</Pill>
             </button>
@@ -225,8 +231,48 @@ function ClipPanel({ clip, overview, checked, pending, busyQueue, onSave, onProc
         </label>
       </div>}
 
+      {/* DLSS 5 drives VE_CLI.exe, which only exists on a Windows ComfyUI: offered only when post-processing runs on this PC. */}
+      {overview.destination === "remote" && draft.dlss5 && <Notice tone="warn" title="DLSS 5 is on for this clip, but it only runs on this PC">
+        <p className="small">The workflow destination is the remote worker, which can't run DLSS 5. Turn it off for this clip, or switch to this PC in <Button size="sm" variant="link" onClick={onSettingsPage}>Settings</Button>.</p>
+        <Button size="sm" variant="secondary" onClick={() => set("dlss5", false)}>Turn DLSS 5 off</Button>
+      </Notice>}
+      {overview.destination === "local" && <>
+      <label className="control toggle-row"><Icon.postprocess size={20} className="control-icon" aria-hidden />
+        <div className="control-text"><b>DLSS 5 neural rendering</b><p>Runs after face treatment and before SeedVR2, through the Custom DLSS5 node on this PC (Windows only). Optional RTX upscale and frame interpolation.</p></div>
+        <Switch checked={draft.dlss5} onChange={(value) => set("dlss5", value)} />
+      </label>
+      {draft.dlss5 && <>
+        <div className="field-row">
+          <label className="field-stack"><span>Style</span>
+            <select className="select" value={draft.dlss5Style} onChange={(event) => set("dlss5Style", event.target.value as PostSettings["dlss5Style"])}>
+              {DLSS5_STYLES.map((style) => <option key={style} value={style}>{style}</option>)}
+            </select>
+          </label>
+          <label className="field-stack"><span>Strength <em className="num">{draft.dlss5Strength.toFixed(1)}</em></span>
+            <Slider min={0} max={2} step={0.1} value={draft.dlss5Strength} onChange={(event) => set("dlss5Strength", Number(event.target.value))} />
+            <small className="muted">How strongly DLSS 5 re-renders materials and lighting. 1.0 is the node's default.</small>
+          </label>
+        </div>
+        <div className="field-row">
+          <label className="field-stack"><span>RTX upscale</span>
+            <select className="select" value={draft.dlss5Scale} onChange={(event) => set("dlss5Scale", Number(event.target.value) as PostSettings["dlss5Scale"])}>
+              {DLSS5_SCALES.map((scale) => <option key={scale} value={scale}>{scale === 1 ? "Off (native size)" : `${scale}× — ${outScaled(clip.sourceSize, scale)}`}</option>)}
+            </select>
+            {draft.dlss5Scale > 1 && draft.upscale && <small className="muted">SeedVR2 still sets the final size ({draft.outputShortEdge}p), from the larger DLSS frames.</small>}
+          </label>
+          <label className="field-stack"><span>Interpolate to</span>
+            <select className="select" value={draft.dlss5TargetFps} onChange={(event) => set("dlss5TargetFps", Number(event.target.value) as PostSettings["dlss5TargetFps"])}>
+              {DLSS5_FPS.map((fps) => <option key={fps} value={fps}>{fps === 0 ? "Off" : `${fps} fps`}</option>)}
+            </select>
+            {draft.dlss5TargetFps > 0 && <small className="muted">DLSS Frame Generation (RTX 40/50). Use the same rate on every interpolated clip: the final stitch converts the whole video to it, and clips left at the render rate repeat frames to match.</small>}
+          </label>
+        </div>
+        {overview.worker?.reachable && overview.worker.dlss5Problem && <Notice tone="warn" title="DLSS 5 isn't available on this worker"><p className="small">{overview.worker.dlss5Problem}</p></Notice>}
+      </>}
+      </>}
+
       <label className="control toggle-row"><Icon.zoomIn size={20} className="control-icon" aria-hidden />
-        <div className="control-text"><b>SeedVR2 restoration and upscaling</b><p>Runs after face treatment. Frame count, frame rate, and aspect ratio are kept and checked.</p></div>
+        <div className="control-text"><b>SeedVR2 restoration and upscaling</b><p>Runs after face treatment{overview.destination === "local" ? " and DLSS 5" : ""}. Frame count, frame rate, and aspect ratio are kept and checked.</p></div>
         <Switch checked={draft.upscale} onChange={(value) => set("upscale", value)} />
       </label>
       {draft.upscale && <label className="field"><span>Output size</span>
@@ -310,7 +356,7 @@ function ClipPanel({ clip, overview, checked, pending, busyQueue, onSave, onProc
       <div className="row-actions post-actions">
         <Button variant="primary" icon={Icon.save} disabled={pending || !dirty} onClick={() => onSave([clip.index], draft)}>Save for clip {clip.index}</Button>
         {others.length > 0 && <Button variant="secondary" icon={Icon.copy} disabled={pending} onClick={() => onSave([clip.index, ...others], draft)}>Apply to {others.length + 1} selected clips</Button>}
-        <Button variant="outline-pink" icon={clip.attempts.length ? Icon.retry : Icon.render} disabled={pending || busyQueue || dirty || !clip.rendered || (clip.settings.faceMode === "preserve" && !clip.settings.upscale) || overview.blockers.length > 0}
+        <Button variant="outline-pink" icon={clip.attempts.length ? Icon.retry : Icon.render} disabled={pending || busyQueue || dirty || !clip.rendered || (clip.settings.faceMode === "preserve" && !clip.settings.upscale && !clip.settings.dlss5) || overview.blockers.length > 0}
           title={dirty ? "Save the settings first." : undefined} onClick={() => onProcess([clip.index])}>{clip.attempts.length ? "Process again" : "Process clip"}</Button>
         {others.length > 0 && <Button variant="secondary" icon={Icon.render} disabled={pending || busyQueue || dirty || overview.blockers.length > 0} onClick={() => onProcess([clip.index, ...others])}>Process {others.length + 1} selected</Button>}
       </div>

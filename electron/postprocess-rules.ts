@@ -5,7 +5,7 @@ import type {
   ClipMode, PostAdvancedSettings, PostAttemptStatus, PostClipState, PostFaceMode, PostPreset, PostResolution, PostResolvedVramMode, PostSettings,
   PostVramMode,
 } from "./contracts";
-import { POST_ATTENTION_MODES, POST_COLOR_CORRECTIONS, POST_FACE_MODES, POST_FACE_ORDERS, POST_OUTPUT_EDGES, POST_VRAM_MODES } from "./contracts";
+import { POST_ATTENTION_MODES, POST_COLOR_CORRECTIONS, POST_DLSS5_FPS, POST_DLSS5_SCALES, POST_DLSS5_STYLES, POST_FACE_MODES, POST_FACE_ORDERS, POST_OUTPUT_EDGES, POST_VRAM_MODES } from "./contracts";
 
 /** Changes whenever the graph the app builds, or the nodes' save/validation contract, would change output pixels. Part of
  *  every cache key, so a new version makes earlier results stale instead of silently reusing them. */
@@ -14,6 +14,7 @@ export const SWAP_MODEL = "inswapper_128.onnx";
 export const RESTORE_MODEL = "codeformer-v0.1.0.pth";
 export const FACE_DETECTION = "retinaface_resnet50";
 export const SEEDVR2_VAE = "ema_vae_fp16.safetensors";
+export const DLSS5_INTERMEDIATE_CRF = 10;
 
 /** Starting presets to measure, not guaranteed limits. Low VRAM targets 16 GB VRAM / 64 GB RAM; High VRAM targets 48 GB VRAM
  *  (96 GB RAM recommended). The destination (this PC or a remote worker) is a separate choice. */
@@ -36,7 +37,8 @@ export const FACE_MODE_LABEL: Record<PostFaceMode, string> = { preserve: "Preser
 
 export function defaultSettings(): PostSettings {
   return {
-    faceMode: "preserve", referenceAssetId: null, restoreAfterSwap: true, codeformerFidelity: 0.7, restoreVisibility: 1, upscale: false,
+    faceMode: "preserve", referenceAssetId: null, restoreAfterSwap: true, codeformerFidelity: 0.7, restoreVisibility: 1,
+    dlss5: false, dlss5Style: "Default", dlss5Strength: 1, dlss5Scale: 1, dlss5TargetFps: 0, upscale: false,
     outputShortEdge: 1080, vramMode: "worker_default",
     advanced: {
       ditModel: null, batchSize: null, temporalOverlap: null, vaeTiling: null, blocksToSwap: null, offload: "preset", attention: "sdpa",
@@ -90,6 +92,11 @@ export function normalizeSettings(raw: unknown): PostSettings {
     restoreAfterSwap: bool(value.restoreAfterSwap ?? base.restoreAfterSwap, "Restore after replacing"),
     codeformerFidelity: Math.round(num(value.codeformerFidelity ?? base.codeformerFidelity, "CodeFormer fidelity", 0, 1) * 100) / 100,
     restoreVisibility: Math.round(num(value.restoreVisibility ?? base.restoreVisibility, "Restore visibility", 0.1, 1) * 100) / 100,
+    dlss5: bool(value.dlss5 ?? base.dlss5, "DLSS 5"),
+    dlss5Style: oneOf(value.dlss5Style ?? base.dlss5Style, POST_DLSS5_STYLES, "DLSS 5 style"),
+    dlss5Strength: Math.round(num(value.dlss5Strength ?? base.dlss5Strength, "DLSS 5 strength", 0, 2) * 10) / 10,
+    dlss5Scale: oneOf(value.dlss5Scale ?? base.dlss5Scale, POST_DLSS5_SCALES, "DLSS 5 scale"),
+    dlss5TargetFps: oneOf(value.dlss5TargetFps ?? base.dlss5TargetFps, POST_DLSS5_FPS, "DLSS 5 target frame rate"),
     upscale: bool(value.upscale ?? base.upscale, "Upscale"),
     outputShortEdge: oneOf(value.outputShortEdge ?? base.outputShortEdge, POST_OUTPUT_EDGES, "Output size"),
     vramMode: oneOf(value.vramMode ?? base.vramMode, POST_VRAM_MODES, "Memory mode"),
@@ -99,7 +106,7 @@ export function normalizeSettings(raw: unknown): PostSettings {
 
 /** True when the clip asks for any processing. Preserve without upscaling uses the original render as is. */
 export function processingRequested(settings: PostSettings): boolean {
-  return settings.faceMode !== "preserve" || settings.upscale;
+  return settings.faceMode !== "preserve" || settings.dlss5 || settings.upscale;
 }
 
 /** A starting point from the scene type. Shown as a suggestion; never applied without the user. */
@@ -125,6 +132,9 @@ export type EffectiveSettings = {
     swapModel: string | null; detection: string; restoreModel: string; codeformerWeight: number; restoreVisibility: number;
     targetFacesOrder: string; targetFacesIndex: string;
   };
+  /** DLSS 5 neural render; scale 1 = native size, targetFps 0 = no interpolation; intermediateCrf is the H.264 quality of
+   *  the file handed to it. */
+  dlss5: null | { style: string; strength: number; scale: number; targetFps: number; intermediateCrf: number };
   upscale: null | {
     ditModel: string; vaeModel: string; resolution: number; batchSize: number; uniformBatch: boolean; temporalOverlap: number; vaeTiling: boolean;
     tileSize: number; tileOverlap: number; blocksToSwap: number; swapIo: boolean; ditOffload: "none" | "cpu"; vaeOffload: "none" | "cpu";
@@ -156,7 +166,11 @@ export function effectiveSettings(settings: PostSettings, mode: PostResolvedVram
     blocksToSwap: blocks, swapIo: false, ditOffload: blocks > 0 ? "cpu" : offload, vaeOffload: offload, tensorOffload: "cpu",
     attention: adv.attention, colorCorrection: adv.colorCorrection, seed: adv.seed,
   } as NonNullable<EffectiveSettings["upscale"]>;
-  return { faceMode: settings.faceMode, face, upscale, resolvedVramMode: mode, frameRamBudgetGb: preset.frameRamBudgetGb };
+  const dlss5 = settings.dlss5 ? {
+    style: settings.dlss5Style, strength: settings.dlss5Strength, scale: settings.dlss5Scale, targetFps: settings.dlss5TargetFps,
+    intermediateCrf: DLSS5_INTERMEDIATE_CRF,
+  } : null;
+  return { faceMode: settings.faceMode, face, dlss5, upscale, resolvedVramMode: mode, frameRamBudgetGb: preset.frameRamBudgetGb };
 }
 
 function canonical(value: unknown): string {
@@ -177,6 +191,8 @@ export function cacheKey(input: { sourceSha256: string; referenceSha256: string 
     workflow: input.workflowVersion ?? POSTPROCESS_WORKFLOW_VERSION, source: input.sourceSha256,
     reference: effective.face?.swapModel ? input.referenceSha256 : null, faceMode: effective.faceMode, face: effective.face, upscale,
     mode: effective.resolvedVramMode,
+    // Only present when on, so results made before DLSS 5 existed keep their keys.
+    ...(effective.dlss5 ? { dlss5: effective.dlss5 } : {}),
   };
   return createHash("sha256").update(canonical(material)).digest("hex");
 }
@@ -234,12 +250,19 @@ export function resolveClip(input: ResolveInput): { resolution: PostResolution; 
   return { resolution: { kind: "unresolved", reason: "Post-processing is enabled but this clip has not been processed." }, state: "needs_processing", text: "Not processed" };
 }
 
-/** Defense in depth after the save node's own checks: the metadata must show the source timing unchanged. */
-export function timingProblems(source: { frames: number; fps: string; width: number; height: number }, output: { frames: number; fps: string; width: number; height: number }): string[] {
+/** Defense in depth after the save node's own checks: the metadata must show the source timing unchanged, or with DLSS 5
+ *  interpolation (targetFps), the target rate and the source duration within two frames. */
+export function timingProblems(source: { frames: number; fps: string; width: number; height: number }, output: { frames: number; fps: string; width: number; height: number }, targetFps = 0): string[] {
   const problems: string[] = [];
   const rate = (fps: string) => { const [a, b = "1"] = fps.split("/"); return Number(a) / Number(b); };
-  if (source.frames !== output.frames) problems.push(`frame count ${source.frames} → ${output.frames}`);
-  if (Math.abs(rate(source.fps) - rate(output.fps)) > 1e-9) problems.push(`frame rate ${source.fps} → ${output.fps}`);
+  if (targetFps) {
+    const expected = Math.round(source.frames * targetFps / rate(source.fps));
+    if (Math.abs(output.frames - expected) > 2) problems.push(`frame count ${output.frames}, expected about ${expected} after interpolation to ${targetFps} fps`);
+    if (Math.abs(rate(output.fps) - targetFps) > 1e-9) problems.push(`frame rate ${output.fps}, expected ${targetFps}`);
+  } else {
+    if (source.frames !== output.frames) problems.push(`frame count ${source.frames} → ${output.frames}`);
+    if (Math.abs(rate(source.fps) - rate(output.fps)) > 1e-9) problems.push(`frame rate ${source.fps} → ${output.fps}`);
+  }
   const aspect = (w: number, h: number) => w / h;
   if (Math.abs(aspect(output.width, output.height) - aspect(source.width, source.height)) / aspect(source.width, source.height) > 0.01) {
     problems.push(`aspect ratio ${source.width}x${source.height} → ${output.width}x${output.height}`);
@@ -289,6 +312,9 @@ export function settingsSummary(effective: EffectiveSettings): string {
   if (effective.face?.swapModel) parts.push(`Replace${effective.face.restoreModel !== "none" ? ` + CodeFormer ${effective.face.codeformerWeight}` : ""}`);
   else if (effective.face) parts.push(`Restore (CodeFormer ${effective.face.codeformerWeight})`);
   else parts.push("Preserve");
+  if (effective.dlss5) {
+    parts.push(`DLSS 5 ${effective.dlss5.style} ${effective.dlss5.strength.toFixed(1)}${(effective.dlss5.scale ?? 1) > 1 ? ` ×${effective.dlss5.scale}` : ""}${effective.dlss5.targetFps ? ` → ${effective.dlss5.targetFps} fps` : ""}`);
+  }
   if (effective.upscale) parts.push(`SeedVR2 ${/7b/.test(effective.upscale.ditModel) ? "7B" : "3B"} ${/fp8/.test(effective.upscale.ditModel) ? "FP8" : "FP16"} → ${effective.upscale.resolution}p, batch ${effective.upscale.batchSize}`);
   parts.push(VRAM_MODE_LABEL[effective.resolvedVramMode]);
   return parts.join(" · ");

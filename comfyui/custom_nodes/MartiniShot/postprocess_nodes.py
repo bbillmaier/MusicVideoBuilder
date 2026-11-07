@@ -2,7 +2,7 @@
 
 Graph (built by the app from workflows/07-postprocess-clip.json):
   MartiniShotPostProcessLoad  -> [ReActorRestoreFace | ReActorFaceSwapOpt] -> MartiniShotFaceReport -> [ReActorUnload]
-                              -> [SeedVR2VideoUpscaler] -> MartiniShotSavePostProcessed
+                              -> [MartiniShotDLSS5] -> [SeedVR2VideoUpscaler] -> MartiniShotSavePostProcessed
 The original render is only ever read. Output goes to <package>/postprocess/..., one new file per attempt.
 """
 from __future__ import annotations
@@ -21,7 +21,7 @@ from typing import Any
 
 from .postprocess_core import (
     NODE_CONTRACT_VERSION, POSTPROCESS_API_VERSION, PostProcessConfigError, check_job_mode, check_memory_budget, check_output_target,
-    encode_command, fps_fraction, fps_text, normalization_plan, normalize_command, parse_selection, resolve_inside,
+    INTERPOLATION_FRAME_TOLERANCE, encode_command, fps_fraction, fps_text, interpolated_frames, normalization_plan, normalize_command, parse_selection, resolve_inside,
     summarize_face_frames, timing_problems, worker_vram_mode,
 )
 from .ref2va_nodes import CATEGORY
@@ -131,7 +131,10 @@ class MartiniShotPostProcessLoad:
         info = _probe(source)
         face_stage = job.get("face_mode") in ("restore", "replace")
         upscale = int(job["upscale"]["resolution"]) if job.get("upscale") else None
-        estimate = check_memory_budget(info["frames"], info["width"], info["height"], face_stage, upscale, frame_ram_budget_gb)
+        dlss5 = job.get("dlss5") or None
+        ratio = float(fps_fraction(dlss5["target_fps"]) / fps_fraction(info["fps"])) if dlss5 and dlss5.get("target_fps") else 1.0
+        estimate = check_memory_budget(info["frames"], info["width"], info["height"], face_stage, upscale, frame_ram_budget_gb,
+                                       bool(dlss5), float(dlss5.get("scale", 1.0)) if dlss5 else 1.0, ratio)
         if unload_models:
             _unload_models()
 
@@ -292,10 +295,17 @@ class MartiniShotSavePostProcessed:
         target.parent.mkdir(parents=True, exist_ok=True)
         partial = target.with_name(target.stem + ".partial.mp4")
         frames, height, width = int(images.shape[0]), int(images.shape[1]), int(images.shape[2])
-        if frames != int(source["frames"]):
+        # DLSS 5 interpolation is the one stage allowed to change the frame rate (same duration, more frames)
+        target_fps = (job.get("dlss5") or {}).get("target_fps") or None
+        if target_fps:
+            expected = interpolated_frames(int(source["frames"]), source["fps"], target_fps)
+            if abs(frames - expected) > INTERPOLATION_FRAME_TOLERANCE:
+                raise PostProcessConfigError(f"DLSS 5 interpolation returned {frames} frames; {source['frames']} frames at {source['fps']} fps make {expected} at {target_fps} fps. Refusing to save a re-timed clip.")
+        elif frames != int(source["frames"]):
             raise PostProcessConfigError(f"Processing returned {frames} frames for a {source['frames']}-frame clip; refusing to save a re-timed clip.")
         pad_w, pad_h = width % 2, height % 2  # yuv420p needs even dimensions; pad one edge pixel rather than rescale
-        command = encode_command(imageio_ffmpeg.get_ffmpeg_exe(), width + pad_w, height + pad_h, fps_fraction(source["fps"]), Path(source["path"]), partial, crf)
+        output_fps = fps_fraction(target_fps) if target_fps else fps_fraction(source["fps"])
+        command = encode_command(imageio_ffmpeg.get_ffmpeg_exe(), width + pad_w, height + pad_h, output_fps, Path(source["path"]), partial, crf)
         channels = int(images.shape[3]) if images.dim() == 4 else 0
         if images.dim() != 4 or channels not in (3, 4):
             raise PostProcessConfigError(f"Processing returned frames of shape {tuple(images.shape)}; expected [frames, height, width, 3].")
@@ -323,7 +333,7 @@ class MartiniShotSavePostProcessed:
                                f"frames {tuple(images.shape)} {images.dtype} on {images.device}):\n" + (error[-2000:] or "ffmpeg printed nothing."))
         try:
             output = _probe(partial)
-            problems = timing_problems(source, output)
+            problems = timing_problems(source, output, target_fps=target_fps)
             if problems:
                 raise PostProcessConfigError("The processed clip does not keep the source timing: " + "; ".join(problems) + ". It was not saved.")
             os.replace(partial, target)
@@ -392,7 +402,10 @@ class MartiniShotFinalizeSelectedVideo:
                 raise FileNotFoundError(f"Clip {segment['index']}: {path} is missing.")
             clips.append(path)
         probes = [_probe(path) for path in clips]
-        plan = normalization_plan(probes)
+        new_frames = [segment.get("new_frames") for segment in segments]
+        plan = normalization_plan(probes, base_fps=manifest.get("fps"),
+                                  new_frames=new_frames if all(isinstance(n, int) and n > 0 for n in new_frames) else None)
+        fitted = plan.get("frames")  # a retimed stitch: each clip's exact frame count at the interpolated rate
         ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
         work = folder / ".stitch_normalized"
         inputs = clips
@@ -401,11 +414,13 @@ class MartiniShotFinalizeSelectedVideo:
             inputs = []
             for number, (path, probe) in enumerate(zip(clips, probes), start=1):
                 target = work / f"{number:03d}.mp4"
-                result = subprocess.run(normalize_command(ffmpeg, path, target, plan["width"], plan["height"]), capture_output=True, text=True)
+                want = fitted[number - 1] if fitted else probe["frames"]
+                command = normalize_command(ffmpeg, path, target, plan["width"], plan["height"], fps=plan.get("fps"), frames=want if fitted else None)
+                result = subprocess.run(command, capture_output=True, text=True)
                 if result.returncode != 0:
                     raise RuntimeError(f"ffmpeg could not normalize {path.name}:\n{result.stderr[-2000:]}")
-                if _probe(target)["frames"] != probe["frames"]:
-                    raise PostProcessConfigError(f"Normalizing {path.name} changed its frame count; nothing was stitched.")
+                if _probe(target)["frames"] != want:
+                    raise PostProcessConfigError(f"Normalizing {path.name} gave {_probe(target)['frames']} frames instead of {want}; nothing was stitched.")
                 inputs.append(target)
 
         stem = output_name.strip() or "final"
@@ -436,7 +451,7 @@ class MartiniShotFinalizeSelectedVideo:
         if result.returncode != 0:
             raise RuntimeError("ffmpeg failed:\n" + result.stderr[-2000:])
         final = _probe(target)
-        expected = sum(probe["frames"] for probe in probes)
+        expected = sum(fitted) if fitted else sum(probe["frames"] for probe in probes)
         if final["frames"] != expected:
             raise PostProcessConfigError(f"The stitched video has {final['frames']} frames; the selected clips have {expected}. {target} is kept for inspection.")
         processed = [int(segment["index"]) for segment in segments if "postprocess/" in chosen[int(segment["index"])].lower()]
@@ -445,7 +460,10 @@ class MartiniShotFinalizeSelectedVideo:
             f"{final['width']}x{final['height']} {final['codec']} at {float(fps_fraction(final['fps'])):.2f} fps, original song audio",
             f"Frames: {final['frames']} (sum of the selected clips).",
             f"Post-processed clips used: {', '.join(map(str, processed)) if processed else 'none'}.",
-        ] + ([f"Normalized every clip to {plan['width']}x{plan['height']} (H.264 CRF 16) because the selected clips differ in size or codec."] if plan["reencode"] else []))
+        ] + ([f"Normalized every clip to {plan['width']}x{plan['height']} (H.264 CRF 16) because the selected clips differ in size, codec, or frame rate."] if plan["reencode"] else [])
+          + ([f"Frame rate: {plan['fps']} fps from DLSS 5 interpolation; each clip fitted to its exact place in the song. "
+              + (f"Clips at the render rate repeat frames to match: {', '.join(plan['repeated'][:20])}." if plan["repeated"] else "Every clip was interpolated.")]
+             if fitted else []))
         return {"ui": {"text": [report]}, "result": (str(target), report)}
 
 
@@ -497,6 +515,18 @@ def _ort_status() -> dict[str, Any]:
     return status
 
 
+def _dlss5_status() -> dict[str, Any]:
+    """Whether the Custom DLSS5 node is loaded and finds VE_CLI.exe (Windows only; absent on Linux workers)."""
+    status: dict[str, Any] = {"node": _dlss5_node() is not None, "cli": None, "error": None}
+    if status["node"]:
+        try:
+            module = sys.modules.get(_dlss5_node().__module__)
+            status["cli"] = str(module.find_cli()) if module and hasattr(module, "find_cli") else None
+        except Exception as error:
+            status["error"] = str(error)
+    return status
+
+
 def environment_info(refresh: bool = False) -> dict[str, Any]:
     """Versions and model availability. The VRAM mode is read fresh every time; the rest is cached per ComfyUI process."""
     global _ENVIRONMENT
@@ -527,6 +557,7 @@ def environment_info(refresh: bool = False) -> dict[str, Any]:
             "contract": NODE_CONTRACT_VERSION,
             "reactor": {"path": str(reactor) if reactor else None, "version": _read_version(reactor / "scripts" / "reactor_version.py" if reactor else None, r'version_flag\s*=\s*"([^"]+)"')},
             "seedvr2": {"path": str(seedvr2) if seedvr2 else None, "version": _read_version(seedvr2 / "pyproject.toml" if seedvr2 else None, r'(?m)^version\s*=\s*"([^"]+)"')},
+            "dlss5": _dlss5_status(),
             "onnxruntime": _ort_status(), "torch": torch_info, "ram_total": ram_total,
             "models": {name: present(name) for name in sorted({*FACE_MODELS, *OPTIONAL_MODELS, *MODE_MODELS["low_vram"], *MODE_MODELS["high_vram"]})},
             "mode_models": MODE_MODELS, "face_models": FACE_MODELS,
@@ -553,14 +584,110 @@ def register_postprocess_api() -> None:
     PromptServer.instance.routes.get("/martini/postprocess/info")(info)
 
 
+DLSS5_NODE = "Custom_DLSS5_Enhance_Video"  # the user's ComfyUI-Custom-DLSS5 pack (Windows: drives VE_CLI.exe)
+DLSS5_STYLES = ("Default", "Natural", "Cinematic")
+DLSS5_WORK_DIR = "martini_shot/_dlss5_work"  # relative to the ComfyUI output folder; files are deleted after use
+
+
+def _dlss5_node():
+    try:
+        import nodes as comfy_nodes
+        return comfy_nodes.NODE_CLASS_MAPPINGS.get(DLSS5_NODE)
+    except Exception:
+        return None
+
+
+class MartiniShotDLSS5:
+    """DLSS 5 neural rendering over a clip's frames, through the Custom DLSS5 Enhance (Video) node.
+
+    The frames go to a high-quality H.264 file at the clip's own frame rate, the Custom DLSS5 node renders it with
+    VE_CLI.exe (optional RTX upscale by `scale`, optional DLSS Frame Generation to `target_fps`, no audio), and the
+    result is decoded back. Runs after face work and before SeedVR2. ComfyUI's models are unloaded first so VE_CLI has
+    the GPU. Without interpolation the frame count must come back unchanged; with it, the clip's duration must be kept
+    (within a couple of frames, which the final stitch then fits exactly). The size must be the input size × scale.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "images": ("IMAGE",), "source_info": ("STRING", {"forceInput": True}),
+            "style": (list(DLSS5_STYLES), {"default": "Default"}),
+            "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.1}),
+            "scale": ("FLOAT", {"default": 1.0, "min": 1.0, "max": 4.0, "step": 0.5, "tooltip": "RTX upscale after the neural render (1 = native size)."}),
+            "target_fps": ("INT", {"default": 0, "min": 0, "max": 120, "tooltip": "0 = off. DLSS Frame Generation to this frame rate (RTX 40/50)."}),
+            "intermediate_crf": ("INT", {"default": 10, "min": 0, "max": 30, "tooltip": "H.264 quality of the file handed to DLSS 5 (lower = closer to lossless)."}),
+            "job_json": ("STRING", {"default": "{}", "multiline": True}),
+        }}
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("frames",)
+    FUNCTION = "enhance"
+    CATEGORY = PP_CATEGORY
+
+    def enhance(self, images, source_info, style, strength, intermediate_crf, job_json, scale=1.0, target_fps=0):
+        from comfy_api.latest import InputImpl, Types
+
+        node_class = _dlss5_node()
+        if node_class is None:
+            raise PostProcessConfigError(f"{DLSS5_NODE} is not loaded. Install ComfyUI-Custom-DLSS5 (and the comfyui-dlss5-enhancer-v15 runtime it uses) and restart ComfyUI.")
+        if style not in DLSS5_STYLES:
+            raise PostProcessConfigError(f"DLSS 5 style must be one of {', '.join(DLSS5_STYLES)}.")
+        job = _job(job_json)
+        source = json.loads(source_info)
+        frames, height, width = int(images.shape[0]), int(images.shape[1]), int(images.shape[2])
+        work = resolve_inside(_output_dir(), DLSS5_WORK_DIR)
+        work.mkdir(parents=True, exist_ok=True)
+        tag = re.sub(r"[^A-Za-z0-9_-]", "", str(job.get("attempt_id") or "clip"))[:40] or "clip"
+        intermediate = work / f"{tag}_in.mp4"
+        rendered = None
+        try:
+            # yuv420p needs even dimensions: pad one edge pixel, then crop it off again after rendering
+            pad_h, pad_w = height % 2, width % 2
+            frames_in = images[..., :3]
+            if pad_h or pad_w:
+                import torch.nn.functional as F
+                frames_in = F.pad(frames_in.permute(0, 3, 1, 2), (0, pad_w, 0, pad_h), mode="replicate").permute(0, 2, 3, 1)
+            video = InputImpl.VideoFromComponents(Types.VideoComponents(images=frames_in, audio=None, frame_rate=fps_fraction(source["fps"])))
+            video.save_to(str(intermediate), crf=int(intermediate_crf))
+            del frames_in, video
+            _unload_models()  # VE_CLI is a separate process that needs the GPU memory ComfyUI is holding
+            scale, target_fps = float(scale), int(target_fps)
+            if target_fps and fps_fraction(target_fps) <= fps_fraction(source["fps"]):
+                raise PostProcessConfigError(f"The DLSS 5 target frame rate ({target_fps}) must be above the clip's {source['fps']} fps.")
+            output, rendered, _count = node_class().process_video(
+                InputImpl.VideoFromFile(str(intermediate)), style, float(strength), scale, "HEVC", "MKV", "Max", target_fps, False, "Disabled",
+                f"{tag}_dlss5", DLSS5_WORK_DIR, False)
+            result = output.get_components().images
+            del output
+            got = int(result.shape[0])
+            expected = interpolated_frames(frames, source["fps"], target_fps) if target_fps else frames
+            if (target_fps and abs(got - expected) > INTERPOLATION_FRAME_TOLERANCE) or (not target_fps and got != frames):
+                raise PostProcessConfigError(f"DLSS 5 returned {got} frames; expected {expected} for this {frames}-frame clip"
+                                             f"{f' interpolated to {target_fps} fps' if target_fps else ''}. Refusing to continue with a re-timed clip.")
+            out_h, out_w = int(result.shape[1]), int(result.shape[2])
+            want_w, want_h = round((width + pad_w) * scale), round((height + pad_h) * scale)
+            if abs(out_w - want_w) > 2 or abs(out_h - want_h) > 2:
+                raise PostProcessConfigError(f"DLSS 5 returned {out_w}x{out_h} frames; {width + pad_w}x{height + pad_h} at {scale:g}x is {want_w}x{want_h}.")
+            # crop the padding back off (it scaled with the frame)
+            keep_w, keep_h = min(out_w, round(width * scale)), min(out_h, round(height * scale))
+            return (result[:, :keep_h, :keep_w, :3].contiguous().float(),)
+        finally:
+            intermediate.unlink(missing_ok=True)
+            if rendered:
+                Path(rendered).unlink(missing_ok=True)
+            gc.collect()
+
+
 NODE_CLASS_MAPPINGS = {
     "MartiniShotPostProcessLoad": MartiniShotPostProcessLoad,
+    "MartiniShotDLSS5": MartiniShotDLSS5,
     "MartiniShotFaceReport": MartiniShotFaceReport,
     "MartiniShotSavePostProcessed": MartiniShotSavePostProcessed,
     "MartiniShotFinalizeSelectedVideo": MartiniShotFinalizeSelectedVideo,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MartiniShotPostProcessLoad": "Martini Shot Post-process Load Clip",
+    "MartiniShotDLSS5": "Martini Shot DLSS 5 (via Custom DLSS5)",
     "MartiniShotFaceReport": "Martini Shot Face Report",
     "MartiniShotSavePostProcessed": "Martini Shot Save Post-processed Clip",
     "MartiniShotFinalizeSelectedVideo": "Martini Shot Finalize Selected Clips",

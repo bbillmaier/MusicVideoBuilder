@@ -97,6 +97,7 @@ function videoSize(file: string): { width: number; height: number } | null {
 type RawInfo = {
   vram_mode?: { value: string | null; source: string; raw: string | null; error: string | null };
   reactor?: { version?: string | null; path?: string | null }; seedvr2?: { version?: string | null; path?: string | null };
+  dlss5?: { node?: boolean; cli?: string | null; error?: string | null };
   onnxruntime?: { version?: string | null; cuda_build?: string | null; session_providers?: string[] | null };
   torch?: { version?: string; cuda?: string; device?: string | null; vram_total?: number | null }; ram_total?: number | null;
   models?: Record<string, { present: boolean }>; mode_models?: Record<string, string[]>; face_models?: string[];
@@ -114,7 +115,7 @@ export async function workerInfo(force = false): Promise<PostWorkerInfo> {
   const cached = workerCache.get(target.endpoint);
   if (!force && cached && Date.now() - cached.at < 30_000) return cached.info;
   const empty: PostWorkerInfo = {
-    endpoint: target.endpoint, reachable: false, error: null, vramDefault: null, reactor: null, seedvr2: null, onnxruntime: null, ortCudaBuild: null,
+    endpoint: target.endpoint, reachable: false, error: null, vramDefault: null, reactor: null, seedvr2: null, dlss5Problem: "The worker was not reached.", onnxruntime: null, ortCudaBuild: null,
     ortSessionProviders: null, torch: null, cuda: null, device: null, vramTotal: null, ramTotal: null, missingModels: { face: [], low_vram: [], high_vram: [], optional: [] }, checkedAt: now(),
   };
   let info = empty;
@@ -132,6 +133,8 @@ export async function workerInfo(force = false): Promise<PostWorkerInfo> {
       ...empty, reachable: true,
       vramDefault: mode ? { value: mode.value === "low_vram" || mode.value === "high_vram" ? mode.value : null, source: mode.source, raw: mode.raw, error: mode.error } : null,
       reactor: raw.reactor?.version ?? (raw.reactor?.path ? "unknown version" : null), seedvr2: raw.seedvr2?.version ?? (raw.seedvr2?.path ? "unknown version" : null),
+      dlss5Problem: !raw.dlss5?.node ? "The Custom DLSS5 Enhance (Video) node is not loaded on this ComfyUI (it is Windows-only, so remote Linux workers never have it)."
+        : !raw.dlss5.cli ? `The Custom DLSS5 node can't find VE_CLI.exe: ${raw.dlss5.error ?? "no runtime found"}.` : null,
       onnxruntime: raw.onnxruntime?.version ?? null, ortCudaBuild: raw.onnxruntime?.cuda_build ?? null, ortSessionProviders: raw.onnxruntime?.session_providers ?? null,
       torch: raw.torch?.version ?? null, cuda: raw.torch?.cuda ?? null, device: raw.torch?.device ?? null, vramTotal: raw.torch?.vram_total ?? null, ramTotal: raw.ram_total ?? null,
       missingModels: { face: missing(raw.face_models), low_vram: missing(raw.mode_models?.low_vram), high_vram: missing(raw.mode_models?.high_vram), optional: missing(["ultralytics/bbox/hand_yolov8s.pt"]) },
@@ -456,6 +459,7 @@ async function processClip(live: Queue, index: number): Promise<void> {
   if (!worker.reachable) return fail(`Post-processing is unavailable on ${worker.endpoint}: ${worker.error}`);
   const missing = [...(context.effective.face ? worker.missingModels.face : []), ...(context.effective.upscale ? worker.missingModels[context.mode.mode] : [])];
   if (context.effective.face && !worker.reactor) return fail("The ReActor node pack is not loaded on the worker. Install it (cloud/runpod/setup.sh does) and restart ComfyUI.");
+  if (context.effective.dlss5 && worker.dlss5Problem) return fail(`DLSS 5 can't run: ${worker.dlss5Problem} Turn DLSS 5 off for this clip, or switch to this PC in Settings.`);
   if (context.effective.upscale && !worker.seedvr2) return fail("The SeedVR2 node pack is not loaded on the worker. Install it and restart ComfyUI.");
   if (missing.length) {
     return fail(`The worker lacks these models for ${PRESETS[context.mode.mode].label}: ${missing.join(", ")}. On RunPod set POST_PROCESSING_MODELS=all (or this mode) and restart the pod; locally put them in ComfyUI/models. Nothing was submitted.`);
@@ -529,7 +533,8 @@ async function recordSuccess(row: AttemptRow, metadata: Record<string, unknown>,
   if (sha !== media.output.sha256) throw new Error("The processed file's sha256 does not match what the worker wrote; it was not used.");
   const source = media.source as Media["source"] & { sha256?: string };
   if (source.sha256 && source.sha256 !== row.source_sha256) throw new Error("The worker processed a different source file than the one Martini Shot hashed.");
-  const problems = timingProblems(source, media.output);
+  const effective = parse<EffectiveSettings>(row.effective);
+  const problems = timingProblems(source, media.output, effective?.dlss5?.targetFps ?? 0);
   if (problems.length) throw new Error(`The processed clip does not keep the source timing (${problems.join("; ")}).`);
   const report = media.face_report ?? parse<Record<string, unknown>>(faceReportText);
   if (report) delete report.per_frame_change;
