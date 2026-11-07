@@ -181,7 +181,8 @@ test("workflow templates: placeholders fill, render package passes as a literal 
   const filled = applyTemplateValues(pkg.prompt, {
     project_name: "static-heart", seed: 7, director_llm: "Qwen | q.safetensors", render_name: "render-01", motif_weight: 0.25,
     dance_style: "K-Pop", target_shot_seconds: 8, min_shot_seconds: 3, max_shot_seconds: 10, cut_rate_vs_energy: 0.5,
-    broll_amount: 0.3, performance_vs_dance: 0.4, freeform_amount: 0, location_variety: 0.5, chorus_consistency: true,
+    broll_amount: 0.3, performance_vs_dance: 0.4, freeform_amount: 0, dance_weight: 0.6, forced_scenes: "intro:B-roll;outro:B-roll",
+    location_variety: 0.5, chorus_consistency: true,
     outfit_change_rate: 0.3, continue_bias: 0.5, hard_cuts_change_location: true, lip_sync: false, surreal_motifs: false,
   }) as Record<string, { class_type: string; inputs: Record<string, unknown> }>;
   assert.deepEqual(Object.values(filled).map((node) => node.class_type).filter((type) => type.startsWith("MartiniShot")),

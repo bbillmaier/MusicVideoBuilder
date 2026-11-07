@@ -14,9 +14,11 @@ import numpy as np
 try:
     from .location_evidence import evidence_text
     from .music_energy import energy_label, energy_reference, relative_energy, rms_level
+    from .shot_mix import DEFAULT_FORCED_TEXT, allows, mix_weights, parse_forced, pick_scene, section_pool
 except ImportError:  # imported as a top-level module by the tests
     from location_evidence import evidence_text
     from music_energy import energy_label, energy_reference, relative_energy, rms_level
+    from shot_mix import DEFAULT_FORCED_TEXT, allows, mix_weights, parse_forced, pick_scene, section_pool
 
 KINDS = ("Subject", "Outfit", "Location")
 ROLES = ("intro", "verse", "chorus", "bridge", "break", "outro")
@@ -240,16 +242,24 @@ def plan_auto_shots(analysis: dict[str, Any], refs: list[dict[str, Any]], *, see
                     selected_actions: dict[int, dict[str, str]] | None = None,
                     require_performer_location_image: bool = False,
                     fixed_shots: list[dict[str, Any]] | None = None,
-                    cut_seed: int | None = None) -> tuple[list[dict[str, Any]], list[str]]:
+                    cut_seed: int | None = None,
+                    dance_weight: float | None = None,
+                    forced_scenes: dict[str, tuple[str, ...]] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
     """Shot dicts in Music Video Shot format, plus a 'why' line per shot.
 
     story: optional {section number: {scene, location, beat}} from the story planner; it overrides the rules for
     location, scene type, and description wherever it is valid.
     cut_seed: varies the automatic cuts per plan (see _cut_points); None keeps the original fixed cuts.
+    broll_amount, performance_vs_dance, freeform_amount, dance_weight: scene-type weights; each section picks one type
+    from them (shot_mix). dance_weight None or below 0 = Dance is 1 - performance_vs_dance (older callers).
+    forced_scenes: {role: scene types} restricting that role's sections; None = the default ticks (intro/outro B-roll).
     fixed_shots: optional [{start, scene, transition}] from the user's song timeline. Its cuts replace the timing rules
     (every section start must be one), and a shot's scene or transition, when set, overrides everything else.
     """
     rng = random.Random(seed)
+    weights = mix_weights(dance_weight, performance_vs_dance, freeform_amount, broll_amount)
+    forced = parse_forced(DEFAULT_FORCED_TEXT) if forced_scenes is None else forced_scenes
+    section_scene, section_choices = "Dance", [("Dance", 1.0)]
     # story_plan.json stores section numbers as JSON object keys, which become strings on reload.
     # Production sections use integer numbers, so normalize them at this boundary.
     story = {int(number): beat for number, beat in (story or {}).items()}
@@ -340,6 +350,11 @@ def plan_auto_shots(analysis: dict[str, Any], refs: list[dict[str, Any]], *, see
         else:
             starts = _cut_points(section, beats, target_shot_seconds, min_shot_seconds, cut_rate_vs_energy, max_shot_seconds,
                                  cut_seed, int(section.get("orig", index + 1)))
+        if new_section:
+            # one scene type per section from the shot-mix weights; locations with actions get a bit more Freeform
+            section_weights = dict(weights, Freeform=weights["Freeform"] * (1.5 if location and location.get("actions") else 1.0))
+            section_choices = section_pool(section_weights, role, forced)
+            section_scene = pick_scene(section_choices, cut_unit(seed, int(section.get("orig", index + 1)), 1002))
         for k, start in enumerate(starts):
             # EXPERIMENTAL lyric triggers: a sung phrase in this shot's window switches to its reference for the
             # rest of the section; a switch mid-section is a hard cut
@@ -359,16 +374,10 @@ def plan_auto_shots(analysis: dict[str, Any], refs: list[dict[str, Any]], *, see
             # Explicit lyric locations take precedence over story locations and transition preferences.
             active_beat = beat if not location_triggered or location is story_location else {}
             # scene type from the section's role and energy
-            if role in ("intro", "outro") and rng.random() < 0.4 + 0.6 * broll_amount:
-                scene = "B-roll"
-            elif k > 0 and rng.random() < broll_amount * 0.35:
-                scene = "B-roll"  # an occasional insert inside a section
-            elif role in ("verse", "bridge", "chorus") and rng.random() < performance_vs_dance:
-                scene = "Performance"  # the slider alone decides; at 100 every verse, bridge, and chorus shot sings
-            elif role in ("verse", "bridge") and rng.random() < freeform_amount * (1.5 if location and location.get("actions") else 1.0):
-                scene = "Freeform"  # locations with actions get a bit more Freeform: there is something to do
-            else:
-                scene = "Dance"
+            scene = section_scene
+            if (k > 0 and scene != "B-roll" and allows(section_choices, "B-roll")
+                    and rng.random() < weights["B-roll"] * 0.35):
+                scene = "B-roll"  # an occasional insert inside a section, unless the role's ticks exclude B-roll
             insert = k > 0 and scene == "B-roll"  # keep the rules' B-roll inserts as cutaways
             if active_beat.get("scene") and not insert:
                 scene = active_beat["scene"]

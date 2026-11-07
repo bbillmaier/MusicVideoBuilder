@@ -26,6 +26,8 @@
         "performance_vs_dance": "{{performance_vs_dance}}",
         "freeform_amount": "{{freeform_amount}}",
         "broll_amount": "{{broll_amount}}",
+        "dance_weight": "{{dance_weight}}",
+        "forced_scenes": "{{forced_scenes}}",
         "story_system": "{{prompt_story_system}}",
         "timeline_shot_rules": "{{prompt_timeline_shot_rules}}"
       }

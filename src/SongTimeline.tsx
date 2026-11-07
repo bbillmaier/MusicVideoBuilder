@@ -550,7 +550,7 @@ function TimelineEditor({ projectId, timeline, onSaved }: { projectId: string; t
         <Button variant="primary" size="sm" icon={Icon.save} busy={saving} disabled={!dirty} onClick={() => void save(false)}>Save timeline</Button>
       </div>
     </div>}
-    {!editing && !timeline.edit.allowed && timeline.edit.reason && timeline.shotSource === "package" && <p className="muted small st-notes"><Icon.info size={14} aria-hidden />{timeline.edit.reason}</p>}
+    {!editing && !timeline.edit.allowed && timeline.edit.reason && <p className="muted small st-notes"><Icon.info size={14} aria-hidden />{timeline.edit.reason}</p>}
     {timeline.notes.length > 0 && !editing && <p className="muted small st-notes"><Icon.info size={14} aria-hidden />{timeline.notes.join(" ")}</p>}
 
     {confirm && <ConfirmDialog title="Rewrite the story of changed sections?" icon={Icon.edit} tone="warn" confirmVariant="primary" confirmIcon={Icon.save}

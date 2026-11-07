@@ -29,6 +29,8 @@
         "broll_amount": "{{broll_amount}}",
         "performance_vs_dance": "{{performance_vs_dance}}",
         "freeform_amount": "{{freeform_amount}}",
+        "dance_weight": "{{dance_weight}}",
+        "forced_scenes": "{{forced_scenes}}",
         "location_variety": "{{location_variety}}",
         "chorus_consistency": "{{chorus_consistency}}",
         "outfit_change_rate": "{{outfit_change_rate}}",

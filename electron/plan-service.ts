@@ -8,7 +8,7 @@ import { comfyStatus, nodeInputOptions, runWorkflowTemplate, serializeComfyWork,
 import { db, getMachineSettings } from "./db";
 import {
   DEFAULT_DIRECTION, DEFAULT_RENDER_STEPS, MAX_SEED, assetFingerprint, cacheEvidence, cachedNodes, chooseDirectorLlm, parseStoryPlan, planFreshness, planInputs,
-  planWorkflowValues, previewText, storySignature, validateDirection, carrySectionEdits, setSectionAction, type PlanInputs, type RawStoryPlan,
+  planWorkflowValues, previewText, savedShotMix, storySignature, validateDirection, carrySectionEdits, setSectionAction, type PlanInputs, type RawStoryPlan,
 } from "./plan-rules";
 import { productionBusy, timelineApplying } from "./production-lock";
 import { ensureComfyProjectSaved, getProject, projectAssetsForPlanning, projectIdentity, suppliedLocationNames } from "./project-service";
@@ -61,8 +61,9 @@ function toDirection(row: DirectionRow): DirectionRecord {
     // Saved before the separate switch existed: the motif slider then asked for surreal imagery, so keep that intent.
     surrealMotifs: saved.surrealMotifs ?? row.motif_weight > 0,
     danceStyle: saved.danceStyle ?? "K-Pop", targetShotSeconds: saved.targetShotSeconds ?? 8, minShotSeconds: saved.minShotSeconds ?? 3,
-    maxShotSeconds: saved.maxShotSeconds ?? 10, cutRateVsEnergy: saved.cutRateVsEnergy ?? 0.5, brollAmount: saved.brollAmount ?? 0.3,
-    performanceVsDance: saved.performanceVsDance ?? 0.4, freeformAmount: saved.freeformAmount ?? 0, locationVariety: saved.locationVariety ?? 0.5,
+    maxShotSeconds: saved.maxShotSeconds ?? 10, cutRateVsEnergy: saved.cutRateVsEnergy ?? 0.5,
+    // Settings saved with the earlier three-slider mix map to the four weights here.
+    ...savedShotMix(saved as Record<string, unknown>), locationVariety: saved.locationVariety ?? 0.5,
     chorusConsistency: saved.chorusConsistency ?? true, outfitChangeRate: saved.outfitChangeRate ?? 0.3, continueBias: saved.continueBias ?? 0.5,
     hardCutsChangeLocation: saved.hardCutsChangeLocation ?? true, lipSync: saved.lipSync ?? false,
     aspectRatio: saved.aspectRatio ?? "4:3", renderMegapixels: saved.renderMegapixels ?? 1, renderSteps: saved.renderSteps ?? DEFAULT_RENDER_STEPS,
@@ -81,8 +82,9 @@ export function saveDirection(projectId: unknown, raw: unknown): Promise<PlanOve
   const direction = validateDirection(raw);
   directionRow(project.id);
   const productionSettings = { danceStyle: direction.danceStyle, targetShotSeconds: direction.targetShotSeconds, minShotSeconds: direction.minShotSeconds,
-    maxShotSeconds: direction.maxShotSeconds, cutRateVsEnergy: direction.cutRateVsEnergy, brollAmount: direction.brollAmount,
-    performanceVsDance: direction.performanceVsDance, freeformAmount: direction.freeformAmount, locationVariety: direction.locationVariety,
+    maxShotSeconds: direction.maxShotSeconds, cutRateVsEnergy: direction.cutRateVsEnergy, danceWeight: direction.danceWeight,
+    performanceWeight: direction.performanceWeight, freeformWeight: direction.freeformWeight, brollWeight: direction.brollWeight,
+    forcedScenes: direction.forcedScenes, locationVariety: direction.locationVariety,
     chorusConsistency: direction.chorusConsistency, outfitChangeRate: direction.outfitChangeRate, continueBias: direction.continueBias,
     hardCutsChangeLocation: direction.hardCutsChangeLocation, lipSync: direction.lipSync, surrealMotifs: direction.surrealMotifs,
     aspectRatio: direction.aspectRatio, renderMegapixels: direction.renderMegapixels, renderSteps: direction.renderSteps };

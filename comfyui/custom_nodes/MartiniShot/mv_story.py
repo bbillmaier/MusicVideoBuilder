@@ -12,11 +12,13 @@ from typing import Any
 try:
     from .dance_writer import load_styles, strip_reasoning
     from .mv_auto import cut_unit
+    from .shot_mix import section_pool, pick_scene
     from .mv_plan import format_time
     from .music_energy import energy_label
 except ImportError:  # imported as top-level modules by the tests
     from dance_writer import load_styles, strip_reasoning
     from mv_auto import cut_unit
+    from shot_mix import section_pool, pick_scene
     from mv_plan import format_time
     from music_energy import energy_label
 
@@ -74,29 +76,21 @@ def prompt_text(value, default: str) -> str:
     return text or default
 
 
-def assign_section_scenes(sections: list[dict[str, Any]], seed: int, performance_vs_dance: float, freeform_amount: float,
-                          broll_amount: float, has_subject: bool = True,
+def assign_section_scenes(sections: list[dict[str, Any]], seed: int, weights: dict[str, float],
+                          forced: dict[str, tuple[str, ...]] | None = None, has_subject: bool = True,
                           marked: dict[int, str] | None = None) -> dict[int, str]:
     """Each section's scene type from the Direction shot mix, before the story is written, so the sliders decide the
-    mix (100% Performance means every verse, bridge, and chorus is Performance) and a reroll's new seed gives a new mix.
-    Same section-level rules as plan_auto_shots: intros and outros may be B-roll, verses/bridges/choruses are
-    Performance with performance_vs_dance, verses/bridges may be Freeform, everything else dances. marked: scene types
+    mix and a reroll's new seed gives a new one. weights: the four scene-type weights (shot_mix.mix_weights); forced:
+    the scene types ticked per role (shot_mix.parse_forced), which restrict that role's sections. marked: scene types
     the user fixed for a whole section on the timeline; they win."""
     scenes = {}
     for number, section in enumerate(sections, start=1):
-        role = str(section.get("role", "")).lower()
         if marked and marked.get(number) in STORY_SCENES:
             scene = marked[number]
         elif not has_subject:
             scene = "B-roll"
-        elif role in ("intro", "outro") and cut_unit(seed, number, 1001) < 0.4 + 0.6 * broll_amount:
-            scene = "B-roll"
-        elif role in ("verse", "bridge", "chorus") and cut_unit(seed, number, 1002) < performance_vs_dance:
-            scene = "Performance"
-        elif role in ("verse", "bridge") and cut_unit(seed, number, 1003) < freeform_amount:
-            scene = "Freeform"
         else:
-            scene = "Dance"
+            scene = pick_scene(section_pool(weights, section.get("role", ""), forced), cut_unit(seed, number, 1002))
         scenes[number] = scene
     return scenes
 

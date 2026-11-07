@@ -4,7 +4,8 @@ import path from "node:path";
 import test from "node:test";
 import {
   DEFAULT_DIRECTION, PREFERRED_DIRECTOR_LLM, assetFingerprint, cacheEvidence, cachedNodes, chooseDirectorLlm, parseCreativeDirection, parseStoryPlan,
-  planFreshness, planInputs, planWorkflowValues, previewText, reportWarnings, storySignature, surrealSetting, validateDirection, wheelPhaseFor, type RawStoryPlan,
+  planFreshness, planInputs, planWorkflowValues, previewText, reportWarnings, savedShotMix, sceneChances, storySignature, surrealSetting, validateDirection,
+  forcedScenesText, wheelPhaseFor, type RawStoryPlan,
 } from "./plan-rules";
 import { applyTemplateValues, type WorkflowTemplate } from "./workflow-template";
 
@@ -55,7 +56,7 @@ test("02-plan-story uses the installed Martini Shot nodes with named values", ()
     min_locations: 4, request_performer_location_images: true, seed: 1234, reset_plan_cache: false,
     story_system: "STORY", timeline_shot_rules: "SHOTS",
     // the Direction shot mix sets each section's scene type before the story is written
-    performance_vs_dance: 0.4, freeform_amount: 0, broll_amount: 0.3,
+    performance_vs_dance: 0.4, freeform_amount: 0, broll_amount: 0.3, dance_weight: 0.6, forced_scenes: "intro:B-roll;outro:B-roll",
   });
   assert.deepEqual(prompt.report, { class_type: "PreviewAny", inputs: { source: ["plan", 1] } });
   assert.deepEqual(prompt.needs_location_images, { class_type: "PreviewAny", inputs: { source: ["plan", 2] } });
@@ -198,17 +199,47 @@ test("planning issues from director_context.json reach the plan model", () => {
 });
 
 test("the shot mix reaches the planner and makes a plan out of date when it changes", () => {
-  const direction = { ...DEFAULT_DIRECTION, planSeed: 7, performanceVsDance: 1 };
+  const direction = { ...DEFAULT_DIRECTION, planSeed: 7, performanceWeight: 1, danceWeight: 0.2, forcedScenes: { chorus: ["Performance" as const] } };
   const inputs = planInputs(direction, PREFERRED_DIRECTOR_LLM, "a");
   const values = planWorkflowValues("p", inputs, true);
   assert.equal(values.performance_vs_dance, 1);
-  assert.equal(values.freeform_amount, DEFAULT_DIRECTION.freeformAmount);
-  assert.equal(values.broll_amount, DEFAULT_DIRECTION.brollAmount);
+  assert.equal(values.dance_weight, 0.2);
+  assert.equal(values.freeform_amount, DEFAULT_DIRECTION.freeformWeight);
+  assert.equal(values.broll_amount, DEFAULT_DIRECTION.brollWeight);
+  assert.equal(values.forced_scenes, "chorus:Performance");
   assert.equal(values.reset_plan_cache, true);
-  const changed = planFreshness(inputs, planInputs({ ...direction, performanceVsDance: 0.4 }, PREFERRED_DIRECTOR_LLM, "a"));
+  const changed = planFreshness(inputs, planInputs({ ...direction, danceWeight: 0.4 }, PREFERRED_DIRECTOR_LLM, "a"));
   assert.equal(changed.state, "stale");
   assert.match(changed.reasons.join(" "), /shot mix changed/);
+  const reticked = planFreshness(inputs, planInputs({ ...direction, forcedScenes: {} }, PREFERRED_DIRECTOR_LLM, "a"));
+  assert.match(reticked.reasons.join(" "), /forced roles/);
   // plans made before the planner used the shot mix are not marked out of date for it
-  const { performanceVsDance: _p, freeformAmount: _f, brollAmount: _b, ...legacy } = inputs;
-  assert.equal(planFreshness(legacy, planInputs({ ...direction, performanceVsDance: 0.4 }, PREFERRED_DIRECTOR_LLM, "a")).state, "fresh");
+  const { danceWeight: _d, performanceWeight: _p, freeformWeight: _f, brollWeight: _b, forcedScenes: _s, ...legacy } = inputs;
+  assert.equal(planFreshness(legacy, planInputs({ ...direction, danceWeight: 0.4 }, PREFERRED_DIRECTOR_LLM, "a")).state, "fresh");
+  // a plan from the three-slider mix compares as its mapped weights, so an untouched mix stays fresh
+  const threeSlider = { ...legacy, performanceVsDance: 0.4, freeformAmount: 0, brollAmount: 0.3 };
+  assert.equal(planFreshness(threeSlider, planInputs({ ...DEFAULT_DIRECTION, planSeed: 7 }, PREFERRED_DIRECTOR_LLM, "a")).state, "fresh");
+  assert.equal(planFreshness(threeSlider, planInputs({ ...DEFAULT_DIRECTION, planSeed: 7, brollWeight: 1 }, PREFERRED_DIRECTOR_LLM, "a")).state, "stale");
+});
+
+test("saved three-slider settings map to the four weights with default ticks", () => {
+  assert.deepEqual(savedShotMix({ performanceVsDance: 1, freeformAmount: 0.5, brollAmount: 0.2 }),
+    { performanceWeight: 1, danceWeight: 0, freeformWeight: 0.5, brollWeight: 0.2, forcedScenes: { intro: ["B-roll"], outro: ["B-roll"] } });
+  assert.deepEqual(savedShotMix({}), { performanceWeight: 0.4, danceWeight: 0.6, freeformWeight: 0, brollWeight: 0.3, forcedScenes: { intro: ["B-roll"], outro: ["B-roll"] } });
+  // new keys win over old ones, and an empty tick table stays empty
+  assert.deepEqual(savedShotMix({ performanceVsDance: 1, performanceWeight: 0.5, danceWeight: 0.5, forcedScenes: {} }).forcedScenes, {});
+  assert.equal(savedShotMix({ performanceVsDance: 1, performanceWeight: 0.5 }).performanceWeight, 0.5);
+});
+
+test("shot-mix weights normalize and force ticks restrict the pool", () => {
+  const weights = { danceWeight: 1, performanceWeight: 1, freeformWeight: 0, brollWeight: 0.5 };
+  assert.deepEqual(sceneChances(weights), [{ scene: "Dance", chance: 0.4 }, { scene: "Performance", chance: 0.4 }, { scene: "B-roll", chance: 0.2 }]);
+  assert.deepEqual(sceneChances(weights, ["Performance", "Dance"]), [{ scene: "Dance", chance: 0.5 }, { scene: "Performance", chance: 0.5 }]);
+  assert.deepEqual(sceneChances(weights, ["Freeform"]), [{ scene: "Freeform", chance: 1 }], "a ticked type at weight 0 still counts");
+  assert.deepEqual(sceneChances({ danceWeight: 0, performanceWeight: 0, freeformWeight: 0, brollWeight: 0 }), [{ scene: "Dance", chance: 1 }]);
+  assert.equal(forcedScenesText({ outro: ["B-roll"], chorus: ["Dance", "Performance"] }), "chorus:Dance+Performance;outro:B-roll");
+  assert.deepEqual(validateDirection({ ...DEFAULT_DIRECTION, forcedScenes: { chorus: ["Performance", "Dance"], verse: [] } }).forcedScenes,
+    { chorus: ["Dance", "Performance"] });
+  assert.throws(() => validateDirection({ ...DEFAULT_DIRECTION, forcedScenes: { hook: ["Dance"] } }), /Unknown section role/);
+  assert.throws(() => validateDirection({ ...DEFAULT_DIRECTION, forcedScenes: { chorus: ["Chorus"] } }), /must be Dance/);
 });

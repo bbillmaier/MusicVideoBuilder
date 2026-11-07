@@ -22,7 +22,7 @@ import {
 import { db, getMachineSettings } from "./db";
 import { locationsOverview } from "./location-service";
 import { storyFileHash } from "./location-rules";
-import { previewText, storySignature, parseStoryPlan, reportBlock, surrealSetting, type RawStoryPlan } from "./plan-rules";
+import { forcedScenesText, previewText, savedShotMix, storySignature, parseStoryPlan, reportBlock, surrealSetting, type RawStoryPlan } from "./plan-rules";
 import { directorLlmOptions, planOverview, renderSteps, writeSectionAction } from "./plan-service";
 import { claimProduction, productionBusy, timelineApplying } from "./production-lock";
 import {
@@ -297,7 +297,13 @@ export async function produceOverview(projectId: unknown): Promise<ProduceOvervi
     packageNotes.push("The plan's section actions changed after this prompt package was written, and its clips were not rewritten. Write a new prompt package, or edit the section again on Produce to rewrite its clips.");
   }
   // Steps are read at render time, so changing them never makes the package's settings out of date.
-  const promptSettings = (direction: CreativeDirection) => JSON.stringify({ ...direction, renderSteps: undefined, surrealMotifs: surrealSetting(direction) });
+  // Packages written with the earlier three-slider shot mix compare as their mapped weights (savedShotMix), with keys
+  // sorted so the order they were saved in does not matter.
+  const promptSettings = (direction: CreativeDirection) => {
+    const { performanceVsDance: _p, freeformAmount: _f, brollAmount: _b, ...rest } = direction as CreativeDirection & Record<string, unknown>;
+    const normalized: Record<string, unknown> = { ...rest, ...savedShotMix(direction as unknown as Record<string, unknown>), renderSteps: undefined, surrealMotifs: surrealSetting(direction) };
+    return JSON.stringify(Object.entries(normalized).filter(([, value]) => value !== undefined).sort(([a], [b]) => a.localeCompare(b)));
+  };
   if (pkg && settings?.direction && promptSettings(settings.direction) !== promptSettings(plans.direction)) {
     packageNotes.push("Shot mix, pacing, lip-sync, or prompt settings changed on Direction. This package keeps its saved settings; write a new prompt package to apply the new values.");
   }
@@ -505,8 +511,10 @@ async function executePackage(runId: string, projectId: string, settings: Packag
         project_name: project.slug, seed: finalSettings.seed, director_llm: llms.selected, render_name: finalSettings.renderName, motif_weight: finalSettings.motifWeight,
         surreal_motifs: surrealSetting(direction),
         dance_style: direction.danceStyle, target_shot_seconds: direction.targetShotSeconds, min_shot_seconds: direction.minShotSeconds,
-        max_shot_seconds: direction.maxShotSeconds, cut_rate_vs_energy: direction.cutRateVsEnergy, broll_amount: direction.brollAmount,
-        performance_vs_dance: direction.performanceVsDance, freeform_amount: direction.freeformAmount, location_variety: direction.locationVariety,
+        // Build Production Plan reads broll_amount, performance_vs_dance, and freeform_amount as scene-type weights.
+        max_shot_seconds: direction.maxShotSeconds, cut_rate_vs_energy: direction.cutRateVsEnergy, broll_amount: direction.brollWeight,
+        performance_vs_dance: direction.performanceWeight, freeform_amount: direction.freeformWeight, dance_weight: direction.danceWeight,
+        forced_scenes: forcedScenesText(direction.forcedScenes), location_variety: direction.locationVariety,
         chorus_consistency: direction.chorusConsistency, outfit_change_rate: direction.outfitChangeRate, continue_bias: direction.continueBias,
         hard_cuts_change_location: direction.hardCutsChangeLocation, lip_sync: direction.lipSync,
       }, projectId, undefined, { jobId, onProgress: (progress: WorkflowProgress) => setPackageActivity(runId, projectId, progress.phase, progress.queuePosition) });

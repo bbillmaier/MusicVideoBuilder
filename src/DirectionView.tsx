@@ -3,6 +3,8 @@ import { formatDuration, readableError } from "./ProjectsView";
 import { isActive, usePlanOverview } from "./usePlan";
 import { Button, Icon, IconButton, LoadingPage, NoProject, Notice, PageHeader, Pill, Slider, Switch, type LucideIcon } from "./ui";
 import { DANCE_STYLES, danceStyleByName } from "./danceStyles";
+import { TIMELINE_ROLES, TIMELINE_SCENES, type ForcedScenes, type TimelineRole, type TimelineScene } from "../electron/contracts";
+import { chancesText, sceneChances } from "../electron/shot-mix";
 
 const BRIEF_MAX = 1000;
 const MAX_MIN_LOCATIONS = 12;
@@ -168,9 +170,12 @@ function DirectionEditor({ project, comfy, onNavigate }: { project: ProjectDetai
           </div> : <label className="field dance-style-custom"><span>Custom style</span><input className="input" value={draft.danceStyle === "Custom" ? "" : draft.danceStyle} maxLength={80}
             placeholder="e.g. waacking with sharp arm patterns" onChange={(event) => change({ danceStyle: event.target.value || "Custom" })} /></label>}
           <h3>Shot mix</h3>
-          <Dial label="B-roll / cutaway amount" value={draft.brollAmount} onChange={(brollAmount) => change({ brollAmount })} />
-          <Dial label="Performance vs dance" value={draft.performanceVsDance} onChange={(performanceVsDance) => change({ performanceVsDance })} />
-          <Dial label="Freeform movement" value={draft.freeformAmount} onChange={(freeformAmount) => change({ freeformAmount })} />
+          <p className="muted small">Each song section gets one scene type. The weights are relative: a type's chance is its weight divided by the total. Tick a type under a role to restrict that role's sections to the ticked types.</p>
+          <Dial label="Dance" value={draft.danceWeight} onChange={(danceWeight) => change({ danceWeight })} />
+          <Dial label="Performance (sung to camera)" value={draft.performanceWeight} onChange={(performanceWeight) => change({ performanceWeight })} />
+          <Dial label="Freeform movement" value={draft.freeformWeight} onChange={(freeformWeight) => change({ freeformWeight })} />
+          <Dial label="B-roll / cutaways" value={draft.brollWeight} onChange={(brollWeight) => change({ brollWeight })} />
+          <ForcedScenesGrid direction={draft} onChange={(forcedScenes) => change({ forcedScenes })} />
           <Dial label="Outfit changes" value={draft.outfitChangeRate} onChange={(outfitChangeRate) => change({ outfitChangeRate })} />
           <Dial label="Location variety" value={draft.locationVariety} onChange={(locationVariety) => change({ locationVariety })} />
           <h3>Pacing &amp; continuity</h3>
@@ -237,6 +242,36 @@ function ToggleRow({ icon: Glyph, label, text, checked, onChange }: { icon: Luci
 
 function Dial({ label, value, onChange }: { label: string; value: number; onChange(value: number): void }) {
   return <label className="control dial"><div className="control-text"><b>{label}</b><p>{Math.round(value * 100)}%</p></div><Slider min={0} max={1} step={0.05} value={value} onChange={(event) => onChange(Number(event.target.value))} /><output className="num">{Math.round(value * 100)}%</output></label>;
+}
+
+/** Scene types forced per song role, plus the chance of each type that results. */
+function ForcedScenesGrid({ direction, onChange }: { direction: CreativeDirection; onChange(forced: ForcedScenes): void }) {
+  const forced = direction.forcedScenes;
+  const toggle = (role: TimelineRole, scene: TimelineScene, on: boolean) => {
+    const ticked = new Set(forced[role] ?? []);
+    if (on) ticked.add(scene); else ticked.delete(scene);
+    const next: ForcedScenes = { ...forced };
+    const scenes = TIMELINE_SCENES.filter((name) => ticked.has(name));
+    if (scenes.length) next[role] = scenes; else delete next[role];
+    onChange(next);
+  };
+  const forcedRoles = TIMELINE_ROLES.filter((role) => forced[role]?.length);
+  return <div className="shot-mix-force">
+    <table className="shot-mix-grid">
+      <caption className="muted small">Force scene types by section role</caption>
+      <thead><tr><th scope="col" />{TIMELINE_ROLES.map((role) => <th key={role} scope="col">{role}</th>)}</tr></thead>
+      <tbody>{TIMELINE_SCENES.map((scene) => <tr key={scene}>
+        <th scope="row">{scene}</th>
+        {TIMELINE_ROLES.map((role) => <td key={role}><input type="checkbox" aria-label={`Force ${scene} for ${role} sections`}
+          checked={forced[role]?.includes(scene) ?? false} onChange={(event) => toggle(role, scene, event.target.checked)} /></td>)}
+      </tr>)}</tbody>
+    </table>
+    <ul className="shot-mix-summary muted small" aria-live="polite">
+      <li><b>{forcedRoles.length ? "Other sections" : "Every section"}:</b> {chancesText(sceneChances(direction))}</li>
+      {forcedRoles.map((role) => <li key={role}><b>{role}:</b> {chancesText(sceneChances(direction, forced[role]))}</li>)}
+    </ul>
+    <p className="muted small">Scene types you mark on the song timeline still win, and with no performer reference every shot is B-roll.</p>
+  </div>;
 }
 
 function NumberControl({ label, value, min, max, onChange }: { label: string; value: number; min: number; max: number; onChange(value: number): void }) {

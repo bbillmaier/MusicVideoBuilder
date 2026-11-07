@@ -331,6 +331,17 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--blue); width: 
 .dance-style-card p + p { margin-top: 6px; color: var(--text-muted); }
 .dance-style-card span { display: block; margin-bottom: 2px; color: var(--blue); font-size: var(--text-xs); font-weight: var(--weight-semibold); letter-spacing: 0.06em; text-transform: uppercase; }
 .dance-style-custom { margin-top: var(--space-2); }
+.shot-mix-force { display: grid; gap: var(--space-2); padding-top: var(--space-3); border-top: 1px solid var(--border-subtle); overflow-x: auto; }
+.shot-mix-grid { border-collapse: collapse; font-size: var(--text-sm); }
+.shot-mix-grid caption { text-align: left; padding-bottom: var(--space-2); }
+.shot-mix-grid th { color: var(--text-2); font-weight: var(--weight-medium); padding: 4px 6px; white-space: nowrap; }
+.shot-mix-grid thead th { font-size: var(--text-xs); text-transform: capitalize; text-align: center; }
+.shot-mix-grid tbody th { text-align: left; }
+.shot-mix-grid td { text-align: center; padding: 4px 6px; border-top: 1px solid var(--border-subtle); }
+.shot-mix-grid input { width: 16px; height: 16px; cursor: pointer; }
+.shot-mix-summary { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; }
+.shot-mix-summary b { color: var(--text-2); text-transform: capitalize; }
+.shot-mix-force > p { margin: 0; }
 .info-box { display: flex; gap: 10px; padding: 10px 12px; border: 1px solid var(--blue-border); border-radius: var(--radius); background: rgba(85, 172, 246, 0.06); color: var(--text-2); font-size: var(--text-sm); }
 .info-box > .lucide { color: var(--blue); margin-top: 1px; }
 .fixed-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; font-size: var(--text-sm); color: var(--text-2); }

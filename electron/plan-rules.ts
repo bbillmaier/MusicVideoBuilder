@@ -2,10 +2,11 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import {
-  STORY_PHASES, type CreativeDirection, type LocationMode, type PlanCacheResult, type PlanData, type PlanFreshness, type PlanSection,
+  STORY_PHASES, TIMELINE_ROLES, TIMELINE_SCENES, type CreativeDirection, type ForcedScenes, type TimelineScene, type LocationMode, type PlanCacheResult, type PlanData, type PlanFreshness, type PlanSection,
   type RequestedLocation, type StoryPhase,
 } from "./contracts";
 import { projectSlug } from "./project-rules";
+export { sceneChances } from "./shot-mix";
 
 export const BRIEF_MAX_LENGTH = 1000;
 /** Martini Shot Plan Story accepts min_locations 0–12. */
@@ -17,10 +18,14 @@ export const RENDER_ASPECT_RATIOS = ["16:9", "9:16", "4:3", "3:4", "1:1", "21:9"
 export const DEFAULT_RENDER_STEPS = 8;
 export const MAX_RENDER_STEPS = 100;
 
+/** Default force ticks: intros and outros are B-roll, which keeps the old rule that they lean to cutaways. */
+export const DEFAULT_FORCED_SCENES: ForcedScenes = { intro: ["B-roll"], outro: ["B-roll"] };
+
 export const DEFAULT_DIRECTION: CreativeDirection = {
   creativeBrief: "", storyWheel: true, minLocations: 0, requestLocationImages: true, motifWeight: 0, surrealMotifs: false,
   danceStyle: "K-Pop", targetShotSeconds: 8, minShotSeconds: 3, maxShotSeconds: 10,
-  cutRateVsEnergy: 0.5, brollAmount: 0.3, performanceVsDance: 0.4, freeformAmount: 0,
+  cutRateVsEnergy: 0.5, danceWeight: 0.6, performanceWeight: 0.4, freeformWeight: 0, brollWeight: 0.3,
+  forcedScenes: DEFAULT_FORCED_SCENES,
   locationVariety: 0.5, chorusConsistency: true, outfitChangeRate: 0.3, continueBias: 0.5,
   hardCutsChangeLocation: true, lipSync: false,
   aspectRatio: "4:3", renderMegapixels: 1, renderSteps: DEFAULT_RENDER_STEPS,
@@ -30,6 +35,38 @@ export const DEFAULT_DIRECTION: CreativeDirection = {
  *  slider then asked for surreal imagery, so a weight above 0 keeps meaning surreal for it. */
 export function surrealSetting(direction: Pick<CreativeDirection, "motifWeight"> & { surrealMotifs?: boolean }): boolean {
   return typeof direction.surrealMotifs === "boolean" ? direction.surrealMotifs : direction.motifWeight > 0;
+}
+
+/** Shot-mix fields from saved production settings. Settings saved before the four weights existed had
+ *  "Performance vs dance" p, which becomes Performance = p and Dance = 1 - p; Freeform and B-roll keep their values,
+ *  and the force ticks start at the defaults. */
+export function savedShotMix(saved: Record<string, unknown>): Pick<CreativeDirection, "danceWeight" | "performanceWeight" | "freeformWeight" | "brollWeight" | "forcedScenes"> {
+  const number = (value: unknown, fallback: number): number => typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  const legacyPerformance = number(saved.performanceVsDance, DEFAULT_DIRECTION.performanceWeight);
+  return {
+    performanceWeight: number(saved.performanceWeight, legacyPerformance),
+    danceWeight: number(saved.danceWeight, Math.round((1 - legacyPerformance) * 100) / 100),
+    freeformWeight: number(saved.freeformWeight, number(saved.freeformAmount, DEFAULT_DIRECTION.freeformWeight)),
+    brollWeight: number(saved.brollWeight, number(saved.brollAmount, DEFAULT_DIRECTION.brollWeight)),
+    forcedScenes: saved.forcedScenes && typeof saved.forcedScenes === "object" ? cleanForcedScenes(saved.forcedScenes) : DEFAULT_FORCED_SCENES,
+  };
+}
+
+/** Keeps known roles and scene types, in TIMELINE_ROLES / TIMELINE_SCENES order, and drops empty roles. */
+export function cleanForcedScenes(raw: unknown): ForcedScenes {
+  const value = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const forced: ForcedScenes = {};
+  for (const role of TIMELINE_ROLES) {
+    const listed = value[role];
+    const scenes = Array.isArray(listed) ? TIMELINE_SCENES.filter((scene) => listed.includes(scene)) : [];
+    if (scenes.length) forced[role] = scenes;
+  }
+  return forced;
+}
+
+/** The forced_scenes text Martini Shot reads: "intro:B-roll;chorus:Performance+Dance". Empty = nothing forced. */
+export function forcedScenesText(forced: ForcedScenes): string {
+  return TIMELINE_ROLES.flatMap((role) => forced[role]?.length ? [`${role}:${forced[role]!.join("+")}`] : []).join(";");
 }
 
 /** Validates direction input from the renderer. Throws a readable error for anything malformed. */
@@ -56,7 +93,7 @@ export function validateDirection(raw: unknown): CreativeDirection {
     if (typeof number !== "number" || !Number.isFinite(number) || number < min || number > max) throw new Error(`${key} is outside its supported range.`);
     return Math.round(number * 2) / 2;
   };
-  const dial = (key: "cutRateVsEnergy" | "brollAmount" | "performanceVsDance" | "freeformAmount" | "locationVariety" | "outfitChangeRate" | "continueBias"): number => {
+  const dial = (key: "cutRateVsEnergy" | "danceWeight" | "performanceWeight" | "freeformWeight" | "brollWeight" | "locationVariety" | "outfitChangeRate" | "continueBias"): number => {
     const number = controls[key];
     if (typeof number !== "number" || !Number.isFinite(number) || number < 0 || number > 1) throw new Error(`${key} must be between 0 and 1.`);
     return Math.round(number * 20) / 20;
@@ -67,6 +104,14 @@ export function validateDirection(raw: unknown): CreativeDirection {
   if (typeof controls.renderSteps !== "number" || !Number.isInteger(controls.renderSteps) || controls.renderSteps < 1 || controls.renderSteps > MAX_RENDER_STEPS) {
     throw new Error(`Steps must be a whole number from 1 to ${MAX_RENDER_STEPS}.`);
   }
+  const forcedRaw = controls.forcedScenes as unknown;
+  if (!forcedRaw || typeof forcedRaw !== "object" || Array.isArray(forcedRaw)) throw new Error("Forced scene types must be a table of roles.");
+  for (const [role, scenes] of Object.entries(forcedRaw as Record<string, unknown>)) {
+    if (!(TIMELINE_ROLES as readonly string[]).includes(role)) throw new Error(`Unknown section role "${role}" in forced scene types.`);
+    if (!Array.isArray(scenes) || scenes.some((scene) => !TIMELINE_SCENES.includes(scene as TimelineScene))) {
+      throw new Error(`Forced scene types for ${role} must be Dance, Performance, Freeform, or B-roll.`);
+    }
+  }
   for (const key of ["chorusConsistency", "hardCutsChangeLocation", "lipSync", "surrealMotifs"] as const) if (typeof controls[key] !== "boolean") throw new Error(`${key} must be on or off.`);
   const targetShotSeconds = shotSeconds("targetShotSeconds", 2, 30);
   const minShotSeconds = shotSeconds("minShotSeconds", 1, 15);
@@ -76,8 +121,9 @@ export function validateDirection(raw: unknown): CreativeDirection {
     creativeBrief, storyWheel: value.storyWheel, minLocations: min, requestLocationImages: value.requestLocationImages,
     motifWeight: Math.round(weight * 20) / 20, surrealMotifs: controls.surrealMotifs,
     danceStyle: controls.danceStyle.trim(), targetShotSeconds, minShotSeconds, maxShotSeconds,
-    cutRateVsEnergy: dial("cutRateVsEnergy"), brollAmount: dial("brollAmount"), performanceVsDance: dial("performanceVsDance"),
-    freeformAmount: dial("freeformAmount"), locationVariety: dial("locationVariety"), chorusConsistency: controls.chorusConsistency,
+    cutRateVsEnergy: dial("cutRateVsEnergy"), danceWeight: dial("danceWeight"), performanceWeight: dial("performanceWeight"),
+    freeformWeight: dial("freeformWeight"), brollWeight: dial("brollWeight"), forcedScenes: cleanForcedScenes(forcedRaw),
+    locationVariety: dial("locationVariety"), chorusConsistency: controls.chorusConsistency,
     outfitChangeRate: dial("outfitChangeRate"), continueBias: dial("continueBias"), hardCutsChangeLocation: controls.hardCutsChangeLocation,
     lipSync: controls.lipSync,
     aspectRatio: controls.aspectRatio, renderMegapixels: Math.round(controls.renderMegapixels * 100) / 100, renderSteps: controls.renderSteps,
@@ -101,10 +147,29 @@ export type PlanInputs = {
   assets: string;
   /** The Direction shot mix, which sets each section's scene type before the story is written. Missing on plans made
    *  before the planner used it; those are not marked out of date for it. */
+  danceWeight?: number;
+  performanceWeight?: number;
+  freeformWeight?: number;
+  brollWeight?: number;
+  /** forcedScenesText of the force ticks. */
+  forcedScenes?: string;
+  /** Plans made with the earlier three-slider mix stored these instead. */
   performanceVsDance?: number;
   freeformAmount?: number;
   brollAmount?: number;
 };
+
+/** The shot mix a plan was made with, as one comparable string, or null for plans made before the planner used it.
+ *  Earlier three-slider plans compare as their mapped weights with the default ticks, so an untouched mix is not
+ *  reported as changed. */
+function shotMixKey(inputs: PlanInputs): string | null {
+  if (inputs.performanceWeight !== undefined) {
+    return [inputs.danceWeight, inputs.performanceWeight, inputs.freeformWeight, inputs.brollWeight, inputs.forcedScenes ?? ""].join("/");
+  }
+  if (inputs.performanceVsDance === undefined) return null;
+  const mix = savedShotMix({ performanceVsDance: inputs.performanceVsDance, freeformAmount: inputs.freeformAmount, brollAmount: inputs.brollAmount });
+  return [mix.danceWeight, mix.performanceWeight, mix.freeformWeight, mix.brollWeight, forcedScenesText(mix.forcedScenes)].join("/");
+}
 
 export function assetFingerprint(assets: { role: string; checksum: string | null; displayName: string }[]): string {
   const hash = createHash("sha256");
@@ -116,7 +181,8 @@ export function planInputs(direction: CreativeDirection & { planSeed: number }, 
   return {
     creativeBrief: normalizeBrief(direction.creativeBrief), storyWheel: direction.storyWheel, minLocations: direction.minLocations,
     requestLocationImages: direction.requestLocationImages, seed: direction.planSeed, directorLlm, assets,
-    performanceVsDance: direction.performanceVsDance, freeformAmount: direction.freeformAmount, brollAmount: direction.brollAmount,
+    danceWeight: direction.danceWeight, performanceWeight: direction.performanceWeight, freeformWeight: direction.freeformWeight,
+    brollWeight: direction.brollWeight, forcedScenes: forcedScenesText(direction.forcedScenes),
   };
 }
 
@@ -131,9 +197,9 @@ export function planFreshness(planned: PlanInputs | null, current: PlanInputs): 
     reasons.push(`Requesting location images was turned ${current.requestLocationImages ? "on" : "off"}.`);
   }
   if (planned.assets !== current.assets) reasons.push("The project's song or reference images changed.");
-  const mix = (inputs: PlanInputs) => [inputs.performanceVsDance, inputs.freeformAmount, inputs.brollAmount].join("/");
-  if (planned.performanceVsDance !== undefined && mix(planned) !== mix(current)) {
-    reasons.push("The shot mix changed (Performance vs Dance, Freeform, or B-roll), and it decides each section's scene type.");
+  const plannedMix = shotMixKey(planned);
+  if (plannedMix !== null && plannedMix !== shotMixKey(current)) {
+    reasons.push("The shot mix changed (scene-type weights or forced roles), and it decides each section's scene type.");
   }
   if (planned.directorLlm !== current.directorLlm) reasons.push("The director LLM in Settings changed.");
   if (planned.seed !== current.seed) reasons.push("The planning seed changed.");
@@ -147,7 +213,10 @@ export function planWorkflowValues(projectSlugValue: string, inputs: PlanInputs,
     project_name: projectSlugValue, director_llm: inputs.directorLlm, creative_brief: inputs.creativeBrief, story_brief: inputs.creativeBrief,
     story_wheel: inputs.storyWheel, min_locations: inputs.minLocations, request_location_images: inputs.requestLocationImages,
     seed: inputs.seed, reset_plan_cache: reroll,
-    performance_vs_dance: inputs.performanceVsDance ?? -1, freeform_amount: inputs.freeformAmount ?? -1, broll_amount: inputs.brollAmount ?? -1,
+    // Plan Story reads performance_vs_dance, freeform_amount, and broll_amount as the Performance, Freeform, and B-roll
+    // weights; below 0 the planner chooses scene types itself.
+    performance_vs_dance: inputs.performanceWeight ?? -1, freeform_amount: inputs.freeformWeight ?? -1, broll_amount: inputs.brollWeight ?? -1,
+    dance_weight: inputs.danceWeight ?? -1, forced_scenes: inputs.forcedScenes ?? "",
   };
 }
 

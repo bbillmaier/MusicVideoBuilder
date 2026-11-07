@@ -14,6 +14,7 @@ from .director_cache import cached_llm, clear_cache
 from .location_evidence import analyze_locations
 from .mv_auto import analyze_song, plan_auto_shots
 from .mv_auto_nodes import MiniMaxH3AutoDirector
+from .shot_mix import DEFAULT_FORCED_TEXT, describe_mix, format_forced, mix_weights, parse_forced
 from .mv_nodes import MiniMaxH3MusicVideoDirector, MiniMaxH3MusicVideoPromptRevision, MiniMaxH3MusicVideoSegmentLoader
 from .mv_story import (CREATIVE_BRIEF_SYSTEM, STORY_SYSTEM, TIMELINE_SHOT_RULES, build_creative_brief_message, parse_story,
                        assign_section_scenes, prompt_text, repair_story_scenes, timeline_section_marks, timeline_shot_rows,
@@ -28,6 +29,8 @@ from .project_store import (find_requested_location, load_project, project_slug,
 
 CATEGORY = "Martini Shot"
 MULTILINE = {"multiline": True, "default": ""}
+FORCED_TOOLTIP = ("Scene types forced per song role, e.g. intro:B-roll;chorus:Performance+Dance. A role's sections then only use "
+                  "the listed types, weighted by their sliders. Empty = nothing forced.")
 
 
 class MartiniShotRenderResolution:
@@ -221,10 +224,14 @@ class MartiniShotPlanStory:
                              "reset_plan_cache": ("BOOLEAN", {"default": False})},
                 "optional": {"story_system": ("STRING", {**MULTILINE, "tooltip": PROMPT_TOOLTIP}),
                              "timeline_shot_rules": ("STRING", {**MULTILINE, "tooltip": PROMPT_TOOLTIP}),
-                             # The Direction shot mix. Below 0 (older workflows) = the planner chooses scene types.
+                             # The Direction shot mix: scene-type weights. Below 0 (older workflows) = the planner
+                             # chooses scene types. performance_vs_dance is the Performance weight; dance_weight below
+                             # 0 means a workflow from before the Dance slider, where Dance = 1 - Performance.
                              "performance_vs_dance": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 1.0, "step": 0.05}),
                              "freeform_amount": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 1.0, "step": 0.05}),
-                             "broll_amount": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 1.0, "step": 0.05})}}
+                             "broll_amount": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 1.0, "step": 0.05}),
+                             "dance_weight": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 1.0, "step": 0.05}),
+                             "forced_scenes": ("STRING", {"default": DEFAULT_FORCED_TEXT, "tooltip": FORCED_TOOLTIP})}}
 
     RETURN_TYPES = ("MARTINI_STORY_PLAN", "STRING", "BOOLEAN")
     RETURN_NAMES = ("story_plan", "report", "needs_location_images")
@@ -233,7 +240,8 @@ class MartiniShotPlanStory:
 
     def plan(self, project, llm, creative_brief="", story_brief="", story_wheel=True, min_locations=0,
              request_performer_location_images=True, seed=0, reset_plan_cache=False, story_system="",
-             timeline_shot_rules="", performance_vs_dance=-1.0, freeform_amount=-1.0, broll_amount=-1.0):
+             timeline_shot_rules="", performance_vs_dance=-1.0, freeform_amount=-1.0, broll_amount=-1.0,
+             dance_weight=-1.0, forced_scenes=DEFAULT_FORCED_TEXT):
         project = copy.deepcopy(project)
         lines = []
         previous_plan = []
@@ -267,12 +275,14 @@ class MartiniShotPlanStory:
             creative = parse_creative_brief(response, creative_brief)
         direction = creative_direction_text(creative)
         section_scenes, mix_lines = None, []
+        weights, forced = None, parse_forced(forced_scenes)
         if min(float(performance_vs_dance), float(freeform_amount), float(broll_amount)) >= 0:
+            weights = mix_weights(float(dance_weight), float(performance_vs_dance), float(freeform_amount), float(broll_amount))
             section_scenes = assign_section_scenes(
-                analysis["sections"], seed, float(performance_vs_dance), float(freeform_amount), float(broll_amount),
-                any(r["kind"] == "Subject" for r in refs),
+                analysis["sections"], seed, weights, forced, any(r["kind"] == "Subject" for r in refs),
                 timeline_section_marks(analysis["sections"], timeline["shots"]) if timeline else None)
-            mix_lines = ["  " + ", ".join(f"section {n}: {scene}" for n, scene in section_scenes.items())]
+            mix_lines = ["  " + describe_mix(weights, forced),
+                         "  " + ", ".join(f"section {n}: {scene}" for n, scene in section_scenes.items())]
         story, story_lines = MiniMaxH3AutoDirector._plan_story(
             llm, analysis, refs, story_brief, False, [], seed, bool(story_wheel),
             bool(request_performer_location_images), int(min_locations), direction,
@@ -295,8 +305,7 @@ class MartiniShotPlanStory:
             # Automatic cuts vary with this seed (mv_auto._cut_points), so a reroll also gives new cuts. Plans made
             # before this key existed have none and keep their original fixed cuts.
             "cut_seed": seed,
-            "shot_mix": {"performance_vs_dance": float(performance_vs_dance), "freeform_amount": float(freeform_amount),
-                         "broll_amount": float(broll_amount)} if section_scenes else None,
+            "shot_mix": {"weights": weights, "forced_scenes": format_forced(forced)} if section_scenes else None,
         }, creative)
         state["requested_locations"] = requested
         if timeline:
@@ -585,7 +594,11 @@ class MartiniShotBuildProductionPlan:
                              "lip_sync": ("BOOLEAN", {"default": False}),
                              "max_shot_seconds": ("FLOAT", {"default": 10.0, "min": 0.0, "max": 120.0, "step": 0.5}),
                              "hard_cuts_change_location": ("BOOLEAN", {"default": True}),
-                             "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFF})}}
+                             "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFF})},
+                # broll_amount, performance_vs_dance, and freeform_amount are scene-type weights. dance_weight below 0
+                # (older workflows) means Dance = 1 - Performance.
+                "optional": {"dance_weight": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 1.0, "step": 0.05}),
+                             "forced_scenes": ("STRING", {"default": DEFAULT_FORCED_TEXT, "tooltip": FORCED_TOOLTIP})}}
 
     RETURN_TYPES = ("MARTINI_PRODUCTION_PLAN", "H3_MVS_LIST", "STRING")
     RETURN_NAMES = ("production_plan", "shots", "report")
@@ -594,7 +607,8 @@ class MartiniShotBuildProductionPlan:
 
     def build(self, resolved_plan, dance_style, target_shot_seconds, min_shot_seconds, cut_rate_vs_energy, broll_amount,
               performance_vs_dance, freeform_amount, location_variety, chorus_consistency, outfit_change_rate,
-              continue_bias, lip_sync, max_shot_seconds, hard_cuts_change_location, seed):
+              continue_bias, lip_sync, max_shot_seconds, hard_cuts_change_location, seed, dance_weight=-1.0,
+              forced_scenes=DEFAULT_FORCED_TEXT):
         if resolved_plan.get("missing_locations"):
             raise ValueError("Cannot build production plan until requested performer location images are present: "
                              + ", ".join(resolved_plan["missing_locations"]))
@@ -613,6 +627,7 @@ class MartiniShotBuildProductionPlan:
             max_shot_seconds=max_shot_seconds, hard_cuts_change_location=bool(hard_cuts_change_location),
             require_performer_location_image=True,
             fixed_shots=resolved_plan.get("timeline_shots") or None,
+            dance_weight=float(dance_weight), forced_scenes=parse_forced(forced_scenes),
             cut_seed=(resolved_plan.get("settings") or {}).get("cut_seed"),
         )
         context = copy.deepcopy(resolved_plan.get("director_context", {}))

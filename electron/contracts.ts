@@ -75,9 +75,15 @@ export type CreativeDirection = {
   minShotSeconds: number;
   maxShotSeconds: number;
   cutRateVsEnergy: number;
-  brollAmount: number;
-  performanceVsDance: number;
-  freeformAmount: number;
+  /** Shot mix: 0–1 weights. Each song section gets one scene type, with a chance of each type equal to its weight
+   *  divided by the total of the eligible weights. */
+  danceWeight: number;
+  performanceWeight: number;
+  freeformWeight: number;
+  brollWeight: number;
+  /** Scene types forced per song role (TIMELINE_ROLES). A role with ticks only uses the ticked types, still weighted
+   *  by their sliders; a ticked type at weight 0 still counts. Roles without ticks use every type. */
+  forcedScenes: ForcedScenes;
   locationVariety: number;
   chorusConsistency: boolean;
   outfitChangeRate: number;
@@ -650,6 +656,8 @@ export const TIMELINE_SCENES: readonly TimelineScene[] = ["Dance", "Performance"
 export const TIMELINE_TRANSITIONS = ["Hard cut", "New angle", "Continue"] as const;
 export type TimelineTransition = typeof TIMELINE_TRANSITIONS[number];
 export const TIMELINE_ROLES = ["intro", "verse", "pre-chorus", "chorus", "post-chorus", "bridge", "break", "outro"] as const;
+export type TimelineRole = typeof TIMELINE_ROLES[number];
+export type ForcedScenes = Partial<Record<TimelineRole, TimelineScene[]>>;
 
 export type SongTimelineSection = {
   number: number;

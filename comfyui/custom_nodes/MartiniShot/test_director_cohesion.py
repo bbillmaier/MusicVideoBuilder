@@ -391,27 +391,94 @@ class CompleteReroll(unittest.TestCase):
         for n, role in enumerate(["verse", "chorus", "verse", "chorus", "bridge", "chorus", "break"], start=1)] + [
         {"start": 80, "end": 90, "role": "outro", "energy": 0.3}]
 
-    def test_full_performance_means_every_verse_bridge_and_chorus_performs(self):
+    def test_full_performance_alone_means_every_unforced_section_performs(self):
         from mv_story import assign_section_scenes
+        from shot_mix import mix_weights, parse_forced
+        weights = mix_weights(0.0, 1.0, 0.0, 0.0)
         for seed in (1, 1959527090, 3532593991):
-            scenes = assign_section_scenes(self.SECTIONS, seed, 1.0, 0.0, 0.3)
-            for number, section in enumerate(self.SECTIONS, start=1):
-                if section["role"] in ("verse", "bridge", "chorus"):
-                    self.assertEqual(scenes[number], "Performance", (seed, number))
-            self.assertEqual(scenes[8], "Dance", "a break still dances")
+            scenes = assign_section_scenes(self.SECTIONS, seed, weights, parse_forced("intro:B-roll;outro:B-roll"))
+            self.assertEqual(scenes[1], "B-roll", "intro is ticked B-roll")
+            self.assertEqual(scenes[9], "B-roll", "outro is ticked B-roll")
+            self.assertEqual(set(list(scenes.values())[1:8]), {"Performance"}, seed)
+
+    def test_weights_are_normalized_per_section(self):
+        from shot_mix import mix_weights, section_pool
+        pool = dict(section_pool(mix_weights(1, 1, 1, 1), "verse", None))
+        self.assertEqual(pool, {"Dance": 0.25, "Performance": 0.25, "Freeform": 0.25, "B-roll": 0.25})
+        pool = dict(section_pool(mix_weights(1, 1, 0, 0.5), "chorus", None))
+        self.assertAlmostEqual(pool["Dance"], 0.4)
+        self.assertAlmostEqual(pool["B-roll"], 0.2)
+        self.assertNotIn("Freeform", pool)
+        self.assertEqual(section_pool(mix_weights(0, 0, 0, 0), "verse", None), [("Dance", 1.0)], "all zero dances")
+
+    def test_forcing_restricts_the_pool_and_a_zero_weight_tick_still_counts(self):
+        from shot_mix import mix_weights, parse_forced, section_pool
+        forced = parse_forced("chorus:Performance+Dance;Pre chorus:freeform;bridge:Nonsense")
+        self.assertEqual(forced, {"chorus": ("Performance", "Dance"), "pre-chorus": ("Freeform",)})
+        weights = mix_weights(1.0, 1.0, 0.0, 1.0)
+        self.assertEqual(dict(section_pool(weights, "Chorus", forced)), {"Dance": 0.5, "Performance": 0.5})
+        self.assertEqual(section_pool(weights, "prechorus", forced), [("Freeform", 1.0)], "ticked at weight 0 still used")
+        self.assertEqual(len(section_pool(weights, "verse", forced)), 3, "unticked roles use every weighted type")
+
+    def test_legacy_performance_vs_dance_maps_to_two_weights(self):
+        from shot_mix import mix_weights
+        self.assertEqual(mix_weights(-1, 0.4, 0.0, 0.3), {"Dance": 0.6, "Performance": 0.4, "Freeform": 0.0, "B-roll": 0.3})
+        self.assertEqual(mix_weights(None, 1.0, 0.5, 0.0)["Dance"], 0.0)
+
+    def test_weighted_mix_matches_its_proportions_over_many_seeds(self):
+        from mv_story import assign_section_scenes
+        from shot_mix import mix_weights
+        counts = {}
+        for seed in range(400):
+            for scene in assign_section_scenes(self.SECTIONS, seed, mix_weights(1, 1, 1, 1), {}).values():
+                counts[scene] = counts.get(scene, 0) + 1
+        total = sum(counts.values())
+        for scene in ("Dance", "Performance", "Freeform", "B-roll"):
+            self.assertAlmostEqual(counts[scene] / total, 0.25, delta=0.04, msg=counts)
 
     def test_a_new_seed_gives_a_new_mix(self):
         from mv_story import assign_section_scenes
-        mixes = {tuple(assign_section_scenes(self.SECTIONS, seed, 0.5, 0.3, 0.3).values()) for seed in range(8)}
+        from shot_mix import mix_weights
+        mixes = {tuple(assign_section_scenes(self.SECTIONS, seed, mix_weights(0.5, 0.5, 0.3, 0.3)).values())
+                 for seed in range(8)}
         self.assertGreater(len(mixes), 1)
 
     def test_timeline_marks_and_missing_performer_win(self):
         from mv_story import assign_section_scenes, timeline_section_marks
+        from shot_mix import mix_weights
         marks = timeline_section_marks(self.SECTIONS, [{"start": 10, "scene": "Freeform"}, {"start": 15, "scene": "Freeform"},
                                                        {"start": 20, "scene": "Dance"}, {"start": 25, "scene": None}])
         self.assertEqual(marks, {2: "Freeform"}, "only a section whose shots all share one marked type")
-        self.assertEqual(assign_section_scenes(self.SECTIONS, 1, 1.0, 0, 0, marked=marks)[2], "Freeform")
-        self.assertEqual(set(assign_section_scenes(self.SECTIONS, 1, 1.0, 0, 0, has_subject=False).values()), {"B-roll"})
+        weights = mix_weights(0, 1.0, 0, 0)
+        self.assertEqual(assign_section_scenes(self.SECTIONS, 1, weights, marked=marks)[2], "Freeform")
+        self.assertEqual(set(assign_section_scenes(self.SECTIONS, 1, weights, has_subject=False).values()), {"B-roll"})
+
+    def test_production_rules_give_each_section_one_weighted_type(self):
+        roles = ["intro", "verse", "chorus", "verse", "outro"]
+        analysis = {"duration": 100.0, "bpm": 120.0, "beats": np.arange(0.0, 100.0, 0.5),
+                    "sections": [{"start": 20.0 * n, "end": 20.0 * n + 20, "role": role, "label": "A", "energy": 0.7,
+                                  "beat_start": 40 * n, "beat_end": 40 * n + 40, "repeats": 1, "loudness": 0.0}
+                                 for n, role in enumerate(roles)]}
+        refs = [{"kind": "Subject", "name": "performer", "image": object(), "weight": 1.0, "tags": set()},
+                {"kind": "Location", "name": "studio", "image": object(), "weight": 1.0, "tags": set(), "actions": [],
+                 "description": ""}]
+        from shot_mix import parse_forced
+        for seed in range(6):
+            shots, _why = plan_auto_shots(analysis, refs, seed=seed, dance_style="K-Pop", target_shot_seconds=6,
+                                          min_shot_seconds=3, cut_rate_vs_energy=0.5, broll_amount=0.0,
+                                          performance_vs_dance=0.0, freeform_amount=1.0, dance_weight=1.0,
+                                          location_variety=0.5, chorus_consistency=True, outfit_change_rate=0.0,
+                                          continue_bias=0.5, lip_sync=False,
+                                          forced_scenes=parse_forced("chorus:Performance;intro:B-roll;outro:B-roll"))
+            by_section = {}
+            for shot in shots:
+                minutes, seconds = shot["start"].split(":")
+                by_section.setdefault(int((float(minutes) * 60 + float(seconds)) // 20), set()).add(shot["scene_type"])
+            self.assertEqual(by_section[0], {"B-roll"})
+            self.assertEqual(by_section[2], {"Performance"}, "forced at weight 0")
+            for number in (1, 3):
+                self.assertEqual(len(by_section[number]), 1, "one type per section without B-roll inserts")
+                self.assertTrue(by_section[number] <= {"Dance", "Freeform"}, (seed, by_section))
 
     def test_story_prompt_fixes_scene_types_and_shows_the_replaced_plan(self):
         message = build_story_message(self.SECTIONS[:2], ["alley"], [], "", {}, True,
